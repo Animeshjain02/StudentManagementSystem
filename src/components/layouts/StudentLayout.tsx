@@ -5,14 +5,11 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   LayoutDashboard,
-  UserCheck,
   FolderGit2,
   PlusCircle,
   FileSpreadsheet,
   CreditCard,
   Bell,
-  HelpCircle,
-  KeyRound,
   LogOut,
   Menu,
   X,
@@ -92,14 +89,10 @@ export function StudentLayout({ children, title, subtitle }: StudentLayoutProps)
 
   const navItems = [
     { label: "Dashboard", href: "/student/dashboard", icon: LayoutDashboard },
-    { label: "My Profile", href: "/student/profile", icon: UserCheck },
     { label: "My Projects", href: "/student/projects", icon: FolderGit2 },
-    { label: "Submit Project", href: "/student/projects/new", icon: PlusCircle, highlight: true },
     { label: "Quotations", href: "/student/quotations", icon: FileSpreadsheet },
     { label: "Payments", href: "/student/payments", icon: CreditCard },
     { label: "Notifications", href: "/student/notifications", icon: Bell },
-    { label: "Support", href: "/student/support", icon: HelpCircle },
-    { label: "Change Password", href: "/student/change-password", icon: KeyRound },
   ];
 
   return (
