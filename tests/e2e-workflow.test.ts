@@ -42,7 +42,7 @@ async function runE2ETests() {
     headers: { "Content-Type": "application/json", Cookie: adminCookie },
     body: JSON.stringify({
       name: "Tanya Sen",
-      email: "tanya.sen@testcollege.edu",
+      email: `tanya.sen.${Date.now()}@testcollege.edu`,
       phone: "+91 98888 77777",
       collegeName: "IIIT Hyderabad",
       university: "IIIT-H",
@@ -63,7 +63,7 @@ async function runE2ETests() {
   const studentFirstLoginRes = await fetch(`${BASE_URL}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email: "student@example.com", password: "Student@12345", portal: "STUDENT" }),
+    body: JSON.stringify({ email: newStudentJson.student.email, password: "Student@12345", portal: "STUDENT" }),
   });
   assert.strictEqual(studentFirstLoginRes.status, 200, "Student login should return 200 OK");
   const studentFirstLoginJson = await studentFirstLoginRes.json();

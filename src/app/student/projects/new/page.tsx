@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { StudentLayout } from "@/components/layouts/StudentLayout";
-import { PROJECT_TYPES } from "@/models/Project";
+import { PROJECT_TYPES } from "@/lib/constants";
 import {
   FolderPlus,
   Send,

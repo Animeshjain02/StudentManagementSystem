@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 
 const JWT_SECRET = new TextEncoder().encode(
@@ -65,19 +65,91 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
   }
 }
 
-export async function getSession(): Promise<TokenPayload | null> {
+export async function getSession(preferredRole?: "ADMIN" | "STUDENT"): Promise<TokenPayload | null> {
   try {
     const cookieStore = await cookies();
     const token = cookieStore.get("auth_token")?.value;
-    if (!token) return null;
-    return await verifyToken(token);
+    if (token) {
+      const verified = await verifyToken(token);
+      if (verified) return verified;
+    }
+
+    // Direct access mode when DISABLE_AUTH=true
+    if (process.env.DISABLE_AUTH === "true") {
+      let roleToUse: "ADMIN" | "STUDENT" | null = preferredRole || null;
+
+      if (!roleToUse) {
+        const portalCookie = cookieStore.get("active_portal")?.value;
+        if (portalCookie === "admin") {
+          roleToUse = "ADMIN";
+        } else if (portalCookie === "student") {
+          roleToUse = "STUDENT";
+        }
+      }
+
+      if (!roleToUse) {
+        try {
+          const headerList = await headers();
+          const referer = headerList.get("referer") || "";
+          const xPortal = headerList.get("x-portal") || "";
+          if (xPortal === "admin" || referer.includes("/admin")) {
+            roleToUse = "ADMIN";
+          } else if (xPortal === "student" || referer.includes("/student")) {
+            roleToUse = "STUDENT";
+          }
+        } catch {
+          // Headers not available in this context
+        }
+      }
+
+      // Default to STUDENT if still unspecified
+      if (!roleToUse) {
+        roleToUse = "STUDENT";
+      }
+
+      const { connectToDatabase } = await import("@/lib/db");
+      await connectToDatabase();
+      const { User } = await import("@/models/User");
+      const { StudentProfile } = await import("@/models/StudentProfile");
+
+      if (roleToUse === "ADMIN") {
+        const adminUser = await User.findOne({ role: "ADMIN" });
+        if (adminUser) {
+          return {
+            userId: adminUser._id.toString(),
+            email: adminUser.email,
+            name: adminUser.name,
+            role: "ADMIN",
+            mustChangePassword: false,
+          };
+        }
+      }
+
+      const studentUser =
+        (await User.findOne({ email: "student@example.com" })) ||
+        (await User.findOne({ role: "STUDENT" }));
+
+      if (studentUser) {
+        const profile = await StudentProfile.findOne({ userId: studentUser._id });
+        return {
+          userId: studentUser._id.toString(),
+          email: studentUser.email,
+          name: studentUser.name,
+          role: "STUDENT",
+          mustChangePassword: false,
+          ambassadorId: profile?.ambassadorId || "CA-2026-0001",
+        };
+      }
+    }
+
+    return null;
   } catch {
     return null;
   }
 }
 
 export async function requireAuth(allowedRole?: "ADMIN" | "STUDENT"): Promise<TokenPayload> {
-  const session = await getSession();
+  const session = await getSession(allowedRole);
   if (!session) {
     throw new Error("UNAUTHORIZED");
   }

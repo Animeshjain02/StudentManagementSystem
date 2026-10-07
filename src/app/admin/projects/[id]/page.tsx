@@ -5,7 +5,7 @@ import Link from "next/link";
 import { AdminLayout } from "@/components/layouts/AdminLayout";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { ProjectTimeline } from "@/components/common/ProjectTimeline";
-import { PROJECT_STATUSES, ProjectStatus } from "@/models/Project";
+import { PROJECT_STATUSES, ProjectStatus } from "@/lib/constants";
 import {
   ArrowLeft,
   FileSpreadsheet,

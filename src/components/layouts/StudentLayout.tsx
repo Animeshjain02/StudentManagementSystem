@@ -29,40 +29,61 @@ interface StudentLayoutProps {
 export function StudentLayout({ children, title, subtitle }: StudentLayoutProps) {
   const pathname = usePathname();
   const router = useRouter();
+  const isAuthDisabled = process.env.NEXT_PUBLIC_DISABLE_AUTH === "true";
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<any>(
+    isAuthDisabled
+      ? {
+          name: "Aarav Sharma",
+          email: "student@example.com",
+          role: "STUDENT",
+          profile: { ambassadorId: "CA-2026-0001", collegeName: "IIT Delhi" },
+        }
+      : null
+  );
   const [unreadNotifs, setUnreadNotifs] = useState(0);
 
   useEffect(() => {
-    fetch("/api/auth/me")
+    // Set active portal cookie for direct access mode
+    if (typeof document !== "undefined") {
+      document.cookie = "active_portal=student; path=/; max-age=86400";
+    }
+
+    fetch("/api/auth/me?portal=student")
       .then((res) => {
         if (!res.ok) {
-          router.push("/student/login");
+          if (!isAuthDisabled) {
+            router.push("/student/login");
+          }
           return null;
         }
         return res.json();
       })
       .then((data) => {
         if (data?.user) {
-          if (data.user.role !== "STUDENT") {
+          if (data.user.role !== "STUDENT" && !isAuthDisabled) {
             router.push("/admin/dashboard");
             return;
           }
           // REQUIREMENT 6: If mustChangePassword is true, force redirect to change password
-          if (data.user.mustChangePassword && pathname !== "/student/change-password") {
+          if (!isAuthDisabled && data.user.mustChangePassword && pathname !== "/student/change-password") {
             router.push("/student/change-password");
             return;
           }
           setUser(data.user);
         }
       })
-      .catch(() => router.push("/student/login"));
+      .catch(() => {
+        if (!isAuthDisabled) {
+          router.push("/student/login");
+        }
+      });
 
     fetch("/api/notifications")
       .then((res) => res.json())
       .then((data) => setUnreadNotifs(data.unreadCount || 0))
       .catch(() => {});
-  }, [router, pathname]);
+  }, [router, pathname, isAuthDisabled]);
 
   const handleLogout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });

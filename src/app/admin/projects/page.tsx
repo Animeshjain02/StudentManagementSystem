@@ -4,7 +4,7 @@ import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { AdminLayout } from "@/components/layouts/AdminLayout";
 import { StatusBadge } from "@/components/common/StatusBadge";
-import { PROJECT_TYPES, PROJECT_STATUSES } from "@/models/Project";
+import { PROJECT_TYPES, PROJECT_STATUSES } from "@/lib/constants";
 import {
   FolderGit2,
   Search,

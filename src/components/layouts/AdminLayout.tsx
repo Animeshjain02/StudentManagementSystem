@@ -33,35 +33,55 @@ interface AdminLayoutProps {
 export function AdminLayout({ children, title, subtitle }: AdminLayoutProps) {
   const pathname = usePathname();
   const router = useRouter();
+  const isAuthDisabled = process.env.NEXT_PUBLIC_DISABLE_AUTH === "true";
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<any>(
+    isAuthDisabled
+      ? {
+          name: "System Administrator",
+          email: "admin@nexusdev.com",
+          role: "ADMIN",
+        }
+      : null
+  );
   const [unreadNotifs, setUnreadNotifs] = useState(0);
 
   useEffect(() => {
-    fetch("/api/auth/me")
+    // Set active portal cookie for direct access mode
+    if (typeof document !== "undefined") {
+      document.cookie = "active_portal=admin; path=/; max-age=86400";
+    }
+
+    fetch("/api/auth/me?portal=admin")
       .then((res) => {
         if (!res.ok) {
-          router.push("/admin/login");
+          if (!isAuthDisabled) {
+            router.push("/admin/login");
+          }
           return null;
         }
         return res.json();
       })
       .then((data) => {
         if (data?.user) {
-          if (data.user.role !== "ADMIN") {
+          if (data.user.role !== "ADMIN" && !isAuthDisabled) {
             router.push("/student/dashboard");
             return;
           }
           setUser(data.user);
         }
       })
-      .catch(() => router.push("/admin/login"));
+      .catch(() => {
+        if (!isAuthDisabled) {
+          router.push("/admin/login");
+        }
+      });
 
     fetch("/api/notifications")
       .then((res) => res.json())
       .then((data) => setUnreadNotifs(data.unreadCount || 0))
       .catch(() => {});
-  }, [router]);
+  }, [router, isAuthDisabled]);
 
   const handleLogout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });

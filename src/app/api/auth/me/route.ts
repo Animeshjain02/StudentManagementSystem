@@ -6,7 +6,15 @@ import { StudentProfile } from "@/models/StudentProfile";
 
 export async function GET(req: NextRequest) {
   try {
-    const session = await getSession();
+    const portalParam = req.nextUrl.searchParams.get("portal");
+    const preferredRole =
+      portalParam === "admin"
+        ? "ADMIN"
+        : portalParam === "student"
+        ? "STUDENT"
+        : undefined;
+
+    const session = await getSession(preferredRole);
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -22,13 +30,15 @@ export async function GET(req: NextRequest) {
       profile = await StudentProfile.findOne({ userId: user._id });
     }
 
+    const isAuthDisabled = process.env.DISABLE_AUTH === "true";
+
     return NextResponse.json({
       user: {
         id: user._id.toString(),
         name: user.name,
         email: user.email,
         role: user.role,
-        mustChangePassword: user.mustChangePassword,
+        mustChangePassword: isAuthDisabled ? false : user.mustChangePassword,
         status: user.status,
         lastLogin: user.lastLogin,
         profile,

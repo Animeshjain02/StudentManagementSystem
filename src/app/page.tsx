@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 
 export default function HomePage() {
+  const isAuthDisabled = process.env.NEXT_PUBLIC_DISABLE_AUTH === "true";
   const [seeding, setSeeding] = useState(false);
   const [seedMessage, setSeedMessage] = useState("");
 
@@ -59,6 +60,12 @@ export default function HomePage() {
           </div>
 
           <div className="flex items-center gap-3">
+            {isAuthDisabled && (
+              <span className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                Direct Access Mode (Auth Disabled)
+              </span>
+            )}
             <button
               onClick={handleSeedDatabase}
               disabled={seeding}
@@ -68,10 +75,10 @@ export default function HomePage() {
               <span>{seeding ? "Seeding Database..." : "Seed Demo DB"}</span>
             </button>
             <Link
-              href="/student/login"
+              href={isAuthDisabled ? "/student/dashboard" : "/student/login"}
               className="text-xs font-semibold px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white shadow-md shadow-indigo-600/30 transition-all"
             >
-              Portal Login
+              {isAuthDisabled ? "Student Dashboard →" : "Portal Login"}
             </Link>
           </div>
         </div>
@@ -142,10 +149,10 @@ export default function HomePage() {
             </ul>
 
             <Link
-              href="/student/login"
+              href={isAuthDisabled ? "/student/dashboard" : "/student/login"}
               className="flex items-center justify-center gap-2 w-full py-3 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm shadow-md shadow-indigo-600/20 transition-all"
             >
-              <span>Access Student Portal</span>
+              <span>{isAuthDisabled ? "Direct Access: Open Student Dashboard" : "Access Student Portal"}</span>
               <ArrowRight className="w-4 h-4" />
             </Link>
           </div>
@@ -177,10 +184,10 @@ export default function HomePage() {
             </ul>
 
             <Link
-              href="/admin/login"
+              href={isAuthDisabled ? "/admin/dashboard" : "/admin/login"}
               className="flex items-center justify-center gap-2 w-full py-3 px-4 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-semibold text-sm shadow-md shadow-purple-600/20 transition-all"
             >
-              <span>Access Admin Portal</span>
+              <span>{isAuthDisabled ? "Direct Access: Open Admin Dashboard" : "Access Admin Portal"}</span>
               <ArrowRight className="w-4 h-4" />
             </Link>
           </div>
@@ -188,10 +195,20 @@ export default function HomePage() {
 
         {/* Development Test Accounts Card */}
         <div className="max-w-2xl mx-auto bg-slate-800/40 border border-slate-700/60 rounded-xl p-6 backdrop-blur-sm">
-          <div className="flex items-center gap-2 mb-4 text-amber-400 font-semibold text-xs tracking-wider uppercase">
-            <Lock className="w-4 h-4" />
-            <span>Development Test Credentials (Requirement 45)</span>
-          </div>
+          {isAuthDisabled ? (
+            <div className="mb-4 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-xs text-emerald-300 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span><strong>Login is currently disabled.</strong> Direct dashboard access is active.</span>
+              </div>
+              <span className="text-[11px] text-slate-400">Set DISABLE_AUTH=false in .env.local to re-enable</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 mb-4 text-amber-400 font-semibold text-xs tracking-wider uppercase">
+              <Lock className="w-4 h-4" />
+              <span>Development Test Credentials (Requirement 45)</span>
+            </div>
+          )}
 
           <div className="grid sm:grid-cols-2 gap-4 text-xs">
             <div className="p-3 bg-slate-900/60 rounded-lg border border-slate-700/40">
