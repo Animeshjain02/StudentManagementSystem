@@ -92,7 +92,6 @@ export function StudentLayout({ children, title, subtitle }: StudentLayoutProps)
     { label: "My Projects", href: "/student/projects", icon: FolderGit2 },
     { label: "Quotations", href: "/student/quotations", icon: FileSpreadsheet },
     { label: "Payments", href: "/student/payments", icon: CreditCard },
-    { label: "Notifications", href: "/student/notifications", icon: Bell },
   ];
 
   return (
