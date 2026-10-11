@@ -89,7 +89,7 @@ export function StudentLoginClient() {
           <img
             src="/images/student_portal_illustration.jpg"
             alt="Welcome to Student Portal"
-            className="w-full h-full object-cover object-top"
+            className="w-full h-full object-top"
           />
         </div>
 
