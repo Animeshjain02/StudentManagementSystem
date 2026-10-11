@@ -52,7 +52,7 @@ export default function StudentProfilePage() {
             course: pr.course || "",
             branch: pr.branch || "",
             semester: pr.semester || "",
-            ambassadorId: pr.ambassadorId || "CA-2026-0001",
+            ambassadorId: pr.ambassadorId || "N/A",
             joiningDate: pr.joiningDate ? new Date(pr.joiningDate).toLocaleDateString() : "N/A",
             status: u.status || "ACTIVE",
             referralCode: pr.referralCode || "",
@@ -74,7 +74,22 @@ export default function StudentProfilePage() {
     setError("");
 
     try {
-      // In student portal, can edit permitted personal details
+      // Students may edit their own contact + academic details (identity fields stay admin-only)
+      const res = await fetch("/api/auth/profile", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: profileData.name,
+          phone: profileData.phone,
+          collegeName: profileData.collegeName,
+          university: profileData.university,
+          course: profileData.course,
+          branch: profileData.branch,
+          semester: profileData.semester,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not save your profile.");
       setMessage("Profile changes saved successfully!");
     } catch (err: any) {
       setError(err.message);
@@ -89,6 +104,13 @@ export default function StudentProfilePage() {
       subtitle="Manage your personal details and academic credentials"
     >
       <div className="max-w-4xl mx-auto">
+        {error && (
+          <div className="mb-6 p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+
         {message && (
           <div className="mb-6 p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
@@ -134,7 +156,7 @@ export default function StudentProfilePage() {
               </div>
               <div>
                 <span className="block text-[10px] uppercase text-slate-500 font-semibold">Status</span>
-                <span className="text-emerald-400 font-medium">Verified Active</span>
+                <span className="text-emerald-400 font-medium">{profileData.status === "ACTIVE" ? "Verified Active" : profileData.status}</span>
               </div>
             </div>
           </div>

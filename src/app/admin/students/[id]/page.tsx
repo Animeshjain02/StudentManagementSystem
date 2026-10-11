@@ -1,5 +1,6 @@
 "use client";
 
+import { budgetLabel } from "@/lib/format";
 import React, { useState, useEffect, use } from "react";
 import Link from "next/link";
 import { AdminLayout } from "@/components/layouts/AdminLayout";
@@ -18,6 +19,15 @@ import {
   KeyRound,
   Shield,
   CheckCircle2,
+  UserCheck,
+  UserX,
+  AlertCircle,
+  X,
+  Sparkles,
+  Eye,
+  EyeOff,
+  Copy,
+  Check,
 } from "lucide-react";
 
 export default function AdminStudentDetailPage({
@@ -32,6 +42,18 @@ export default function AdminStudentDetailPage({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+
+  // Status Toggle State
+  const [statusLoading, setStatusLoading] = useState(false);
+
+  // Reset Password Modal State
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetError, setResetError] = useState("");
+  const [newPasswordInput, setNewPasswordInput] = useState("Student@12345");
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [copiedPassword, setCopiedPassword] = useState(false);
+  const [resetSuccessData, setResetSuccessData] = useState<{ password: string } | null>(null);
 
   const loadStudent = async () => {
     try {
@@ -50,15 +72,82 @@ export default function AdminStudentDetailPage({
     loadStudent();
   }, [id]);
 
-  const handleResetPassword = async () => {
+  const handleToggleStatus = async () => {
+    if (!data?.student) return;
+    setStatusLoading(true);
+    const currentStatus = data.student.status;
+    const newStatus = currentStatus === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+
     try {
-      const res = await fetch(`/api/admin/students/${id}/reset-password`, { method: "POST" });
+      const res = await fetch(`/api/admin/students/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error);
-      setNotice(json.message);
+      if (!res.ok) throw new Error(json.error || "Failed to update status");
+
+      setData((prev: any) => ({
+        ...prev,
+        student: {
+          ...prev.student,
+          status: newStatus,
+        },
+      }));
+
+      setNotice(
+        newStatus === "ACTIVE"
+          ? `Ambassador ${data.student.name} activated successfully! Login credentials are now active.`
+          : `Ambassador ${data.student.name} deactivated. Login credentials are now disabled and will not work.`
+      );
     } catch (e: any) {
-      alert(e.message);
+      alert(e.message || "Failed to update ambassador status.");
+    } finally {
+      setStatusLoading(false);
     }
+  };
+
+  const handleOpenResetModal = () => {
+    setResetError("");
+    setResetSuccessData(null);
+    setCopiedPassword(false);
+    setShowNewPassword(false);
+    setNewPasswordInput(`Student@${Math.floor(1000 + Math.random() * 9000)}`);
+    setShowResetModal(true);
+  };
+
+  const handleExecuteResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setResetError("");
+    setResetLoading(true);
+
+    try {
+      if (!newPasswordInput.trim() || newPasswordInput.trim().length < 6) {
+        throw new Error("Password must be at least 6 characters long.");
+      }
+
+      const res = await fetch(`/api/admin/students/${id}/reset-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: newPasswordInput.trim() }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Failed to reset password");
+
+      setResetSuccessData({ password: json.password || newPasswordInput.trim() });
+      setNotice(`Password successfully updated in database for ${data.student.name}.`);
+    } catch (e: any) {
+      setResetError(e.message || "Failed to reset password.");
+    } finally {
+      setResetLoading(false);
+    }
+  };
+
+  const handleCopyNewPassword = () => {
+    if (!resetSuccessData) return;
+    navigator.clipboard.writeText(resetSuccessData.password);
+    setCopiedPassword(true);
+    setTimeout(() => setCopiedPassword(false), 2000);
   };
 
   if (loading) {
@@ -139,13 +228,48 @@ export default function AdminStudentDetailPage({
             </div>
           </div>
 
-          <button
-            onClick={handleResetPassword}
-            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700 text-xs font-semibold transition-colors"
-          >
-            <KeyRound className="w-4 h-4" />
-            <span>Reset Password</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Status Toggle Button */}
+            <button
+              type="button"
+              disabled={statusLoading}
+              onClick={handleToggleStatus}
+              className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold border transition-all ${
+                student.status === "ACTIVE"
+                  ? "bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border-rose-500/30"
+                  : "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+              }`}
+              title={
+                student.status === "ACTIVE"
+                  ? "Click to deactivate ambassador (disables login credentials)"
+                  : "Click to activate ambassador (enables login credentials)"
+              }
+            >
+              {statusLoading ? (
+                <span className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
+              ) : student.status === "ACTIVE" ? (
+                <>
+                  <UserX className="w-4 h-4 text-rose-400" />
+                  <span>Deactivate Ambassador</span>
+                </>
+              ) : (
+                <>
+                  <UserCheck className="w-4 h-4 text-emerald-400" />
+                  <span>Activate Ambassador</span>
+                </>
+              )}
+            </button>
+
+            {/* Reset Password Button */}
+            <button
+              type="button"
+              onClick={handleOpenResetModal}
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700 text-xs font-semibold transition-colors shadow-xs"
+            >
+              <KeyRound className="w-4 h-4" />
+              <span>Reset Password</span>
+            </button>
+          </div>
         </div>
 
         {/* Academic Details Grid */}
@@ -221,7 +345,7 @@ export default function AdminStudentDetailPage({
                   <td className="py-3.5 px-4 font-medium text-slate-900">{p.projectName}</td>
                   <td className="py-3.5 px-4 text-slate-600">{p.clientName}</td>
                   <td className="py-3.5 px-4">{p.projectType}</td>
-                  <td className="py-3.5 px-4 font-semibold">₹{(p.approvedBudget || p.expectedBudget)?.toLocaleString()}</td>
+                  <td className="py-3.5 px-4 font-semibold">{budgetLabel(p)}</td>
                   <td className="py-3.5 px-4"><StatusBadge status={p.status} size="sm" /></td>
                   <td className="py-3.5 px-4 text-right">
                     <Link
@@ -237,6 +361,170 @@ export default function AdminStudentDetailPage({
           </table>
         </div>
       </div>
+
+      {/* Interactive Reset Password Modal */}
+      {showResetModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 my-8 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600">
+                  <KeyRound className="w-4.5 h-4.5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Reset Ambassador Password</h3>
+                  <p className="text-[11px] text-slate-500">
+                    {student.name} • {student.email}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowResetModal(false);
+                  setResetSuccessData(null);
+                  setResetError("");
+                }}
+                className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {resetError && (
+              <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0" />
+                <span>{resetError}</span>
+              </div>
+            )}
+
+            {resetSuccessData ? (
+              <div className="space-y-4">
+                <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs flex items-center gap-2.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                  <span className="font-medium">Password successfully updated in the database!</span>
+                </div>
+
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2 text-xs">
+                  <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block">
+                    Updated Login Credentials
+                  </span>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500 text-[11px]">Email</span>
+                      <span className="text-slate-700 font-mono font-medium">{student.email}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500 text-[11px]">New Password</span>
+                      <span className="font-mono font-bold bg-white px-2.5 py-1 rounded border border-slate-200 text-slate-900 select-all">
+                        {resetSuccessData.password}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={handleCopyNewPassword}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-semibold transition-colors"
+                  >
+                    {copiedPassword ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-600" />
+                        <span className="text-emerald-700">Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5 text-slate-500" />
+                        <span>Copy Password</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowResetModal(false);
+                      setResetSuccessData(null);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition-colors"
+                  >
+                    Done
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleExecuteResetPassword} className="space-y-4 text-xs">
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="font-medium text-slate-700">New Password *</label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const rand = Math.floor(1000 + Math.random() * 9000);
+                        setNewPasswordInput(`Student@${rand}`);
+                      }}
+                      className="text-[10px] text-indigo-600 hover:text-indigo-800 font-semibold inline-flex items-center gap-1"
+                    >
+                      <Sparkles className="w-3 h-3" />
+                      <span>Generate Random</span>
+                    </button>
+                  </div>
+                  <div className="relative">
+                    <input
+                      type={showNewPassword ? "text" : "password"}
+                      required
+                      minLength={6}
+                      value={newPasswordInput}
+                      onChange={(e) => setNewPasswordInput(e.target.value)}
+                      placeholder="Enter new password (min. 6 chars)"
+                      className="w-full px-3 py-2 pr-9 border border-slate-300 rounded-lg text-slate-900 font-mono text-xs focus:ring-2 focus:ring-indigo-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowNewPassword(!showNewPassword)}
+                      className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
+                    >
+                      {showNewPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                  <p className="mt-1 text-[10px] text-slate-400">
+                    Saves directly to the database. Ambassador can log in immediately.
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setShowResetModal(false)}
+                    className="px-3.5 py-2 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-semibold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={resetLoading}
+                    className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs shadow-xs disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+                  >
+                    {resetLoading ? (
+                      <>
+                        <span className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                        <span>Updating Database...</span>
+                      </>
+                    ) : (
+                      <>
+                        <KeyRound className="w-3.5 h-3.5" />
+                        <span>Update Password in Database</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </AdminLayout>
   );
 }
+

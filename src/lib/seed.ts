@@ -12,6 +12,9 @@ import { ActivityLog } from "../models/ActivityLog";
 import { Setting } from "../models/Setting";
 
 export async function runSeed() {
+  if (process.env.ALLOW_SEED !== "true") {
+    throw new Error("Database seeding is permanently disabled. Explicit permission required (ALLOW_SEED=true).");
+  }
   console.log("Starting database seed process...");
   await connectToDatabase();
 

@@ -1,9 +1,16 @@
 import mongoose from "mongoose";
+import dns from "dns";
+
+// Fix Node.js SRV record resolution issue on Windows for mongodb+srv://
+try {
+  dns.setServers(["8.8.8.8", "1.1.1.1"]);
+} catch {
+  // Ignore in restricted environments
+}
 
 interface MongooseCache {
   conn: typeof mongoose | null;
   promise: Promise<typeof mongoose> | null;
-  memoryServer?: any;
 }
 
 declare global {
@@ -13,49 +20,96 @@ declare global {
 let cached: MongooseCache = global.mongooseCache || {
   conn: null,
   promise: null,
-  memoryServer: null,
 };
 
 if (!global.mongooseCache) {
   global.mongooseCache = cached;
 }
 
+let cachedResolvedUri: string | null = (globalThis as any)._mongoResolvedUri || null;
+
+async function resolveMongoSrvUri(uri: string): Promise<string> {
+  if (!uri.startsWith("mongodb+srv://")) {
+    return uri;
+  }
+  if (cachedResolvedUri) {
+    return cachedResolvedUri;
+  }
+  if ((globalThis as any)._mongoResolvedUri) {
+    cachedResolvedUri = (globalThis as any)._mongoResolvedUri;
+    return cachedResolvedUri!;
+  }
+
+  try {
+    const resolver = new dns.promises.Resolver();
+    resolver.setServers(["8.8.8.8", "1.1.1.1"]);
+
+    const parsed = new URL(uri.replace("mongodb+srv://", "http://"));
+    const host = parsed.hostname;
+    const auth = parsed.username
+      ? `${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password)}@`
+      : "";
+    const pathname = parsed.pathname;
+
+    const [srvRecords, txtRecords] = await Promise.all([
+      resolver.resolveSrv(`_mongodb._tcp.${host}`),
+      resolver.resolveTxt(host).catch(() => []),
+    ]);
+
+    if (!srvRecords || srvRecords.length === 0) {
+      return uri;
+    }
+
+    const hosts = srvRecords.map((r) => `${r.name}:${r.port}`).join(",");
+    const queryParams = new URLSearchParams(parsed.search.replace(/^\?/, ""));
+    queryParams.set("ssl", "true");
+
+    if (txtRecords && txtRecords.length > 0) {
+      for (const chunk of txtRecords) {
+        const txtStr = Array.isArray(chunk) ? chunk.join("") : chunk;
+        const txtParams = new URLSearchParams(txtStr);
+        for (const [key, val] of txtParams.entries()) {
+          if (!queryParams.has(key)) {
+            queryParams.set(key, val);
+          }
+        }
+      }
+    }
+
+    const resolved = `mongodb://${auth}${hosts}${pathname}?${queryParams.toString()}`;
+    cachedResolvedUri = resolved;
+    (globalThis as any)._mongoResolvedUri = resolved;
+    return resolved;
+  } catch (srvErr: any) {
+    console.warn("SRV resolution fallback error:", srvErr.message);
+    return uri;
+  }
+}
+
 export async function connectToDatabase(): Promise<typeof mongoose> {
+  // If connection is already open, return it immediately without any delay
   if (cached.conn && mongoose.connection.readyState === 1) {
     return cached.conn;
   }
 
   if (!cached.promise) {
+    let rawUri = process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/campus_ambassador_db";
+    // Strip accidental duplicate prefix like MONGODB_URI=MONGODB_URI=
+    if (rawUri.startsWith("MONGODB_URI=")) {
+      rawUri = rawUri.replace(/^MONGODB_URI=/, "").trim();
+    }
+
     const opts = {
       bufferCommands: false,
-      serverSelectionTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 8000,
+      connectTimeoutMS: 10000,
     };
 
-    let uri = process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/campus_ambassador_db";
-
     cached.promise = (async () => {
-      try {
-        console.log(`Connecting to MongoDB at: ${uri.split("@").pop()}`);
-        const m = await mongoose.connect(uri, opts);
-        console.log("Connected to MongoDB successfully.");
-        return m;
-      } catch (err: any) {
-        console.warn("Direct MongoDB connection failed:", err.message);
-        console.log("Attempting fallback to in-memory MongoDB Server for seamless local operation...");
-        try {
-          const { MongoMemoryServer } = await import("mongodb-memory-server");
-          if (!cached.memoryServer) {
-            cached.memoryServer = await MongoMemoryServer.create();
-          }
-          const memUri = cached.memoryServer.getUri();
-          console.log(`Connected to MongoMemoryServer at: ${memUri}`);
-          const memConn = await mongoose.connect(memUri, { bufferCommands: false });
-          return memConn;
-        } catch (memErr: any) {
-          console.error("Failed to connect to MongoMemoryServer:", memErr.message);
-          throw new Error(`MongoDB connection failed: ${err.message}. Memory server error: ${memErr.message}`);
-        }
-      }
+      const connectionUri = await resolveMongoSrvUri(rawUri);
+      const m = await mongoose.connect(connectionUri, opts);
+      console.log("Connected to MongoDB database successfully.");
+      return m;
     })();
   }
 

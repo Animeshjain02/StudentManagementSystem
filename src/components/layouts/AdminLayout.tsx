@@ -5,16 +5,10 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   LayoutDashboard,
-  Users,
   FolderGit2,
-  FileSpreadsheet,
-  CheckCircle,
   Award,
   CreditCard,
-  BarChart3,
   Bell,
-  History,
-  Settings,
   LogOut,
   Menu,
   X,
@@ -22,6 +16,7 @@ import {
   ChevronRight,
   Shield,
   Layers,
+  Loader2,
 } from "lucide-react";
 
 interface AdminLayoutProps {
@@ -30,91 +25,132 @@ interface AdminLayoutProps {
   subtitle?: string;
 }
 
+let cachedAdminUser: any = null;
+
+export function clearAdminAuthCache() {
+  cachedAdminUser = null;
+}
+
 export function AdminLayout({ children, title, subtitle }: AdminLayoutProps) {
   const pathname = usePathname();
   const router = useRouter();
-  const isAuthDisabled = process.env.NEXT_PUBLIC_DISABLE_AUTH === "true";
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [user, setUser] = useState<any>(
-    isAuthDisabled
-      ? {
-          name: "System Administrator",
-          email: "admin@nexusdev.com",
-          role: "ADMIN",
-        }
-      : null
-  );
+  const [user, setUser] = useState<any>(cachedAdminUser);
+  const [checkingAuth, setCheckingAuth] = useState(!cachedAdminUser);
   const [unreadNotifs, setUnreadNotifs] = useState(0);
 
   useEffect(() => {
-    // Set active portal cookie for direct access mode
-    if (typeof document !== "undefined") {
-      document.cookie = "active_portal=admin; path=/; max-age=86400";
-    }
+    let isMounted = true;
 
     fetch("/api/auth/me?portal=admin")
       .then((res) => {
         if (!res.ok) {
-          if (!isAuthDisabled) {
-            router.push("/admin/login");
-          }
-          return null;
+          throw new Error("Unauthorized");
         }
         return res.json();
       })
       .then((data) => {
+        if (!isMounted) return;
         if (data?.user) {
-          if (data.user.role !== "ADMIN" && !isAuthDisabled) {
+          if (data.user.role !== "ADMIN") {
             router.push("/student/dashboard");
             return;
           }
+          cachedAdminUser = data.user;
           setUser(data.user);
+          setCheckingAuth(false);
+        } else {
+          cachedAdminUser = null;
+          router.push("/admin/login");
         }
       })
       .catch(() => {
-        if (!isAuthDisabled) {
+        if (isMounted) {
+          cachedAdminUser = null;
           router.push("/admin/login");
         }
       });
 
-    fetch("/api/notifications")
-      .then((res) => res.json())
-      .then((data) => setUnreadNotifs(data.unreadCount || 0))
-      .catch(() => {});
-  }, [router, isAuthDisabled]);
+    const pollNotifications = () => {
+      fetch("/api/notifications")
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (!data || !isMounted) return;
+          const count = data.unreadCount || 0;
+          setUnreadNotifs(count);
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("notifications-sync", { detail: data }));
+          }
+        })
+        .catch(() => {});
+    };
+
+    pollNotifications();
+    const notifInterval = setInterval(pollNotifications, 5000);
+    const onWindowFocus = () => pollNotifications();
+    window.addEventListener("focus", onWindowFocus);
+
+    return () => {
+      isMounted = false;
+      clearInterval(notifInterval);
+      window.removeEventListener("focus", onWindowFocus);
+    };
+  }, [router]);
+
+  useEffect(() => {
+    const handleSync = (e: any) => {
+      if (typeof e.detail?.unreadCount === "number") {
+        setUnreadNotifs(e.detail.unreadCount);
+      }
+    };
+    window.addEventListener("notifications-sync", handleSync);
+    return () => window.removeEventListener("notifications-sync", handleSync);
+  }, []);
 
   const handleLogout = async () => {
+    cachedAdminUser = null;
     await fetch("/api/auth/logout", { method: "POST" });
     router.push("/admin/login");
   };
 
   const navItems = [
     { label: "Dashboard", href: "/admin/dashboard", icon: LayoutDashboard },
-    { label: "Students", href: "/admin/students", icon: Users },
     { label: "Projects", href: "/admin/projects", icon: FolderGit2 },
-    { label: "Quotations", href: "/admin/quotations", icon: FileSpreadsheet },
-    { label: "Approvals", href: "/admin/approvals", icon: CheckCircle },
     { label: "Ambassadors", href: "/admin/ambassadors", icon: Award },
     { label: "Payments", href: "/admin/payments", icon: CreditCard },
-    { label: "Reports", href: "/admin/reports", icon: BarChart3 },
-    { label: "Activity Logs", href: "/admin/activity-logs", icon: History },
-    { label: "Settings", href: "/admin/settings", icon: Settings },
   ];
 
+  const [navigatingTo, setNavigatingTo] = useState<string | null>(null);
+
+  useEffect(() => {
+    setNavigatingTo(null);
+  }, [pathname]);
+
+  if (checkingAuth) {
+    return (
+      <div className="h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-400">
+        <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-3" />
+        <span className="text-xs font-medium">Verifying authorization...</span>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-slate-50 flex">
-      {/* Sidebar for Desktop */}
-      <aside className="hidden lg:flex lg:flex-col w-64 bg-slate-900 text-slate-300 border-r border-slate-800 flex-shrink-0">
+    <div className="h-screen bg-slate-50 flex overflow-hidden">
+      {/* Top instant navigation loading bar */}
+      {navigatingTo && (
+        <div className="fixed top-0 left-0 right-0 h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-indigo-600 z-50 animate-pulse shadow-sm shadow-indigo-500/50" />
+      )}
+
+      {/* Sidebar for Desktop - Locked stable, zero slide effect */}
+      <aside className="hidden lg:flex lg:flex-col w-64 bg-slate-900 text-slate-300 border-r border-slate-800 flex-shrink-0 h-full">
         {/* Brand */}
-        <div className="h-16 flex items-center px-6 gap-3 border-b border-slate-800 bg-slate-950/40">
+        <div className="h-16 flex items-center px-6 gap-3 border-b border-slate-800 bg-slate-950/40 flex-shrink-0">
           <div className="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold shadow-md shadow-indigo-500/20">
             <Shield className="w-5 h-5 text-white" />
           </div>
           <div>
-            <div className="font-bold text-white tracking-tight text-sm">NexusDev Solutions</div>
-            <div className="text-[10px] text-indigo-400 font-semibold uppercase tracking-wider">
-              Admin Portal
-            </div>
+            <div className="font-bold text-white tracking-tight text-sm">Admin Panel</div>
           </div>
         </div>
 
@@ -122,18 +158,30 @@ export function AdminLayout({ children, title, subtitle }: AdminLayoutProps) {
         <div className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const active = pathname === item.href || pathname.startsWith(item.href + "/");
+            const isTarget = navigatingTo === item.href;
+            const active =
+              isTarget ||
+              (!navigatingTo && (pathname === item.href || pathname.startsWith(item.href + "/")));
             return (
               <Link
                 key={item.href}
                 href={item.href}
+                prefetch={false}
+                onMouseEnter={() => router.prefetch(item.href)}
+                onClick={(e) => {
+                  if (pathname === item.href) {
+                    e.preventDefault();
+                    return;
+                  }
+                  setNavigatingTo(item.href);
+                }}
                 className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-all ${
                   active
                     ? "bg-indigo-600 text-white font-semibold shadow-sm"
                     : "text-slate-400 hover:text-white hover:bg-slate-800/60"
-                }`}
+                } ${isTarget ? "ring-1 ring-indigo-400 opacity-90" : ""}`}
               >
-                <Icon className={`w-4 h-4 ${active ? "text-white" : "text-slate-400"}`} />
+                <Icon className={`w-4 h-4 ${active ? "text-white" : "text-slate-400"} ${isTarget ? "animate-spin" : ""}`} />
                 <span>{item.label}</span>
               </Link>
             );
@@ -141,7 +189,7 @@ export function AdminLayout({ children, title, subtitle }: AdminLayoutProps) {
         </div>
 
         {/* Admin User info & Logout */}
-        <div className="p-4 border-t border-slate-800 bg-slate-950/30">
+        <div className="p-4 border-t border-slate-800 bg-slate-950/30 flex-shrink-0">
           <div className="flex items-center gap-3 mb-3">
             <div className="w-9 h-9 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-xs border border-indigo-500/30">
               {user?.name?.slice(0, 2).toUpperCase() || "AD"}
@@ -161,10 +209,10 @@ export function AdminLayout({ children, title, subtitle }: AdminLayoutProps) {
         </div>
       </aside>
 
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0">
+      {/* Main Content Area - Only this container scrolls, sidebar stays completely fixed */}
+      <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
         {/* Top Navbar */}
-        <header className="h-16 bg-white border-b border-slate-200 px-4 sm:px-6 flex items-center justify-between sticky top-0 z-30 shadow-xs">
+        <header className="h-16 bg-white border-b border-slate-200 px-4 sm:px-6 flex items-center justify-between flex-shrink-0 z-30 shadow-xs">
           <div className="flex items-center gap-4">
             <button
               onClick={() => setMobileMenuOpen(true)}
@@ -213,7 +261,7 @@ export function AdminLayout({ children, title, subtitle }: AdminLayoutProps) {
             />
             <div className="relative flex-1 flex flex-col max-w-xs w-full bg-slate-900 text-slate-300">
               <div className="h-16 flex items-center justify-between px-6 border-b border-slate-800">
-                <span className="font-bold text-white text-sm">Admin Navigation</span>
+                <span className="font-bold text-white text-sm">Admin Panel</span>
                 <button
                   onClick={() => setMobileMenuOpen(false)}
                   className="p-1 rounded-md text-slate-400 hover:text-white"

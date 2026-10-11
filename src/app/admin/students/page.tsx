@@ -74,8 +74,9 @@ export default function AdminStudentsPage() {
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setPage(1);
-    fetchStudents();
+    // Changing the page triggers the effect above; otherwise fetch directly
+    if (page !== 1) setPage(1);
+    else fetchStudents();
   };
 
   const handleAddStudent = async (e: React.FormEvent) => {
@@ -117,12 +118,19 @@ export default function AdminStudentsPage() {
 
   const handleToggleStatus = async (studentId: string, currentStatus: string) => {
     const nextStatus = currentStatus === "ACTIVE" ? "DISABLED" : "ACTIVE";
+    if (nextStatus === "DISABLED" && !window.confirm("Disable this ambassador? They will be signed out and unable to log in.")) {
+      return;
+    }
     try {
-      await fetch(`/api/admin/students/${studentId}`, {
+      const res = await fetch(`/api/admin/students/${studentId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: nextStatus }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || "Could not update the account status.");
+      }
       fetchStudents();
     } catch (e) {
       console.error(e);
@@ -130,6 +138,7 @@ export default function AdminStudentsPage() {
   };
 
   const handleResetPassword = async (studentId: string) => {
+    if (!window.confirm("Generate a new temporary password for this ambassador? Their current password will stop working.")) return;
     try {
       const res = await fetch(`/api/admin/students/${studentId}/reset-password`, {
         method: "POST",
@@ -176,7 +185,10 @@ export default function AdminStudentsPage() {
         <div className="flex items-center gap-3">
           <select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onChange={(e) => {
+              setPage(1);
+              setStatusFilter(e.target.value);
+            }}
             className="px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-2xs"
           >
             <option value="">All Statuses</option>
@@ -185,7 +197,10 @@ export default function AdminStudentsPage() {
           </select>
 
           <button
-            onClick={() => setShowAddModal(true)}
+            onClick={() => {
+              setAddError("");
+              setShowAddModal(true);
+            }}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-xs shadow-indigo-200 transition-colors flex-shrink-0"
           >
             <UserPlus className="w-4 h-4" />
@@ -388,6 +403,8 @@ export default function AdminStudentsPage() {
                   <input
                     type="text"
                     required
+                    minLength={8}
+                    title="At least 8 characters with upper/lower case, a number and a special character"
                     value={newStudentForm.temporaryPassword}
                     onChange={(e) =>
                       setNewStudentForm({ ...newStudentForm, temporaryPassword: e.target.value })

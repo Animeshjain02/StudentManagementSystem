@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs";
+import { createHash } from "crypto";
 import { SignJWT, jwtVerify } from "jose";
 import { cookies, headers } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
@@ -48,6 +49,18 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
   return bcrypt.compare(password, hash);
 }
 
+/** Cookie options shared by every route that issues the session cookie. */
+export const SESSION_COOKIE = "auth_token";
+export function sessionCookieOptions() {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge: 60 * 60 * 24 * 7, // 7 days
+  };
+}
+
 export async function signToken(payload: Omit<TokenPayload, "exp">): Promise<string> {
   return new SignJWT({ ...payload })
     .setProtectedHeader({ alg: "HS256" })
@@ -65,84 +78,74 @@ export async function verifyToken(token: string): Promise<TokenPayload | null> {
   }
 }
 
+const RESET_PURPOSE = "password-reset";
+
+/** Short fingerprint of the current password hash; ties a reset link to the password it was issued for. */
+function passwordFingerprint(passwordHash: string): string {
+  return createHash("sha256").update(passwordHash).digest("hex").slice(0, 24);
+}
+
+/** 30-minute, single-use (the fingerprint changes as soon as the password does) password reset token. */
+export async function createResetToken(userId: string, passwordHash: string): Promise<string> {
+  return new SignJWT({ purpose: RESET_PURPOSE, userId, fp: passwordFingerprint(passwordHash) })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setExpirationTime("30m")
+    .sign(JWT_SECRET);
+}
+
+export async function verifyResetToken(
+  token: string
+): Promise<{ userId: string; matches: (passwordHash: string) => boolean } | null> {
+  try {
+    const { payload } = await jwtVerify(token, JWT_SECRET);
+    if (payload.purpose !== RESET_PURPOSE || typeof payload.userId !== "string" || typeof payload.fp !== "string") {
+      return null;
+    }
+    const fp = payload.fp;
+    return { userId: payload.userId, matches: (hash) => passwordFingerprint(hash) === fp };
+  } catch {
+    return null;
+  }
+}
+
+const sessionCache = new Map<string, { payload: TokenPayload; expiresAt: number }>();
+
 export async function getSession(preferredRole?: "ADMIN" | "STUDENT"): Promise<TokenPayload | null> {
   try {
     const cookieStore = await cookies();
     const token = cookieStore.get("auth_token")?.value;
-    if (token) {
+    if (!token) {
+      return null;
+    }
+
+    const now = Date.now();
+    const cachedSession = sessionCache.get(token);
+    let sessionPayload = cachedSession && cachedSession.expiresAt > now ? cachedSession.payload : null;
+
+    if (!sessionPayload) {
       const verified = await verifyToken(token);
-      if (verified) return verified;
-    }
-
-    // Direct access mode when DISABLE_AUTH=true
-    if (process.env.DISABLE_AUTH === "true") {
-      let roleToUse: "ADMIN" | "STUDENT" | null = preferredRole || null;
-
-      if (!roleToUse) {
-        const portalCookie = cookieStore.get("active_portal")?.value;
-        if (portalCookie === "admin") {
-          roleToUse = "ADMIN";
-        } else if (portalCookie === "student") {
-          roleToUse = "STUDENT";
+      if (verified) {
+        const { connectToDatabase } = await import("@/lib/db");
+        await connectToDatabase();
+        const { User } = await import("@/models/User");
+        const account = await User.findById(verified.userId).select("status role").lean();
+        if (account && account.status === "ACTIVE" && account.role === verified.role) {
+          sessionCache.set(token, { payload: verified, expiresAt: now + 10000 }); // cache 10s
+          sessionPayload = verified;
         }
-      }
-
-      if (!roleToUse) {
-        try {
-          const headerList = await headers();
-          const referer = headerList.get("referer") || "";
-          const xPortal = headerList.get("x-portal") || "";
-          if (xPortal === "admin" || referer.includes("/admin")) {
-            roleToUse = "ADMIN";
-          } else if (xPortal === "student" || referer.includes("/student")) {
-            roleToUse = "STUDENT";
-          }
-        } catch {
-          // Headers not available in this context
-        }
-      }
-
-      // Default to STUDENT if still unspecified
-      if (!roleToUse) {
-        roleToUse = "STUDENT";
-      }
-
-      const { connectToDatabase } = await import("@/lib/db");
-      await connectToDatabase();
-      const { User } = await import("@/models/User");
-      const { StudentProfile } = await import("@/models/StudentProfile");
-
-      if (roleToUse === "ADMIN") {
-        const adminUser = await User.findOne({ role: "ADMIN" });
-        if (adminUser) {
-          return {
-            userId: adminUser._id.toString(),
-            email: adminUser.email,
-            name: adminUser.name,
-            role: "ADMIN",
-            mustChangePassword: false,
-          };
-        }
-      }
-
-      const studentUser =
-        (await User.findOne({ email: "student@example.com" })) ||
-        (await User.findOne({ role: "STUDENT" }));
-
-      if (studentUser) {
-        const profile = await StudentProfile.findOne({ userId: studentUser._id });
-        return {
-          userId: studentUser._id.toString(),
-          email: studentUser.email,
-          name: studentUser.name,
-          role: "STUDENT",
-          mustChangePassword: false,
-          ambassadorId: profile?.ambassadorId || "CA-2026-0001",
-        };
       }
     }
 
-    return null;
+    if (!sessionPayload) {
+      return null;
+    }
+
+    if (preferredRole && sessionPayload.role !== preferredRole) {
+      return null;
+    }
+
+    return sessionPayload;
   } catch {
     return null;
   }

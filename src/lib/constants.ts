@@ -1,36 +1,40 @@
 export const PROJECT_STATUSES = [
   "SUBMITTED",
+  "QUOTATION_SENT",
+  "APPROVED",
+  "IN_PROGRESS",
+  "WORKING",
+  "COMPLETED",
+  "PAYMENT_PENDING",
+  "DELIVERED",
   "UNDER_REVIEW",
   "REQUIREMENT_CLARIFICATION",
   "QUOTATION_PREPARATION",
-  "QUOTATION_SENT",
   "AWAITING_APPROVAL",
-  "APPROVED",
   "REJECTED",
   "ASSIGNED",
-  "WORKING",
   "TESTING",
   "CLIENT_REVIEW",
   "CHANGES_REQUESTED",
   "READY_FOR_DELIVERY",
-  "DELIVERED",
-  "PAYMENT_PENDING",
-  "COMPLETED",
   "CANCELLED",
 ] as const;
 
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
+export const PROJECT_STAGE_OPTIONS = [
+  { value: "SUBMITTED", label: "Submitted" },
+  { value: "QUOTATION_SENT", label: "Quotation" },
+  { value: "APPROVED", label: "Approval" },
+  { value: "IN_PROGRESS", label: "In Progress" },
+  { value: "COMPLETED", label: "Completed" },
+  { value: "PAYMENT_PENDING", label: "Payment" },
+  { value: "DELIVERED", label: "Delivered" },
+] as const;
+
 export const PROJECT_TYPES = [
-  "Web Application",
-  "Mobile Application",
-  "Desktop Application",
-  "AI/ML",
-  "Data Science",
-  "ERP",
-  "CRM",
-  "E-commerce",
-  "Other",
+  "Software",
+  "Hardware",
 ] as const;
 
 export type ProjectType = (typeof PROJECT_TYPES)[number];

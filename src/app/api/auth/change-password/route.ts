@@ -1,9 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, validatePasswordStrength, hashPassword, signToken } from "@/lib/auth";
+import { handleApiError } from "@/lib/api";
+import {
+  getSession,
+  validatePasswordStrength,
+  hashPassword,
+  verifyPassword,
+  signToken,
+  sessionCookieOptions,
+  SESSION_COOKIE,
+} from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import { User } from "@/models/User";
 import { StudentProfile } from "@/models/StudentProfile";
 import { logActivity } from "@/lib/activity";
+import { clearHits, isRateLimited, recordHit } from "@/lib/rate-limit";
 
 export async function POST(req: NextRequest) {
   try {
@@ -12,9 +22,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { newPassword, confirmPassword } = await req.json();
+    const { currentPassword, newPassword, confirmPassword } = await req.json();
 
-    if (!newPassword || !confirmPassword) {
+    if (typeof newPassword !== "string" || typeof confirmPassword !== "string" || !newPassword || !confirmPassword) {
       return NextResponse.json(
         { error: "New password and confirmation are required." },
         { status: 400 }
@@ -37,6 +47,28 @@ export async function POST(req: NextRequest) {
     const user = await User.findById(session.userId);
     if (!user) {
       return NextResponse.json({ error: "User not found." }, { status: 404 });
+    }
+
+    // The forced first-login change is authenticated by the temporary password the user just signed in
+    // with. Any later (voluntary) change must prove knowledge of the current password, so a hijacked or
+    // unattended session cannot silently take over the account.
+    if (!user.mustChangePassword) {
+      const throttleKey = `pwchange:${user._id}`;
+      if (isRateLimited(throttleKey, 5, 15 * 60 * 1000)) {
+        return NextResponse.json({ error: "Too many attempts. Please try again later." }, { status: 429 });
+      }
+      if (typeof currentPassword !== "string" || !currentPassword) {
+        return NextResponse.json({ error: "Please enter your current password." }, { status: 400 });
+      }
+      if (!(await verifyPassword(currentPassword, user.passwordHash))) {
+        recordHit(throttleKey);
+        return NextResponse.json({ error: "Your current password is incorrect." }, { status: 400 });
+      }
+      clearHits(throttleKey);
+    }
+
+    if (await verifyPassword(newPassword, user.passwordHash)) {
+      return NextResponse.json({ error: "New password must be different from the current password." }, { status: 400 });
     }
 
     const newHash = await hashPassword(newPassword);
@@ -72,16 +104,10 @@ export async function POST(req: NextRequest) {
       message: "Password changed successfully! You can now access your dashboard.",
     });
 
-    res.cookies.set("auth_token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 7,
-    });
+    res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions());
 
     return res;
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return handleApiError(err);
   }
 }

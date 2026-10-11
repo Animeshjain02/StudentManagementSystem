@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { StudentLayout } from "@/components/layouts/StudentLayout";
 import { StatusBadge } from "@/components/common/StatusBadge";
-import { generateQuotationPDF } from "@/lib/pdf";
+import { downloadQuotationPDF } from "@/lib/company";
 import {
   ArrowLeft,
   Download,
@@ -129,35 +129,13 @@ export default function StudentQuotationDetailPage({
     }
   };
 
-  const handleDownloadPDF = () => {
+  const handleDownloadPDF = async () => {
     if (!quotationData) return;
-    const { quotation, project } = quotationData;
-
-    const doc = generateQuotationPDF({
-      quotationId: quotation.quotationId,
-      version: quotation.version,
-      date: new Date(quotation.createdAt).toLocaleDateString(),
-      validUntil: new Date(quotation.validUntil).toLocaleDateString(),
-      companyName: "NexusDev Solutions Pvt Ltd",
-      companyAddress: "Innov8 Hub, Koramangala 5th Block, Bengaluru, Karnataka 560095",
-      companyEmail: "contact@nexusdev.solutions",
-      companyPhone: "+91 80 4912 3456",
-      clientName: project.clientName,
-      clientEmail: project.clientEmail,
-      collegeName: project.collegeName,
-      projectName: project.projectName,
-      projectId: project.projectId,
-      items: quotation.items,
-      subtotal: quotation.subtotal,
-      discount: quotation.discount,
-      tax: quotation.tax,
-      total: quotation.total,
-      deliveryTimeline: quotation.deliveryTimeline,
-      paymentTerms: quotation.paymentTerms,
-      terms: quotation.terms,
-    });
-
-    doc.save(`${quotation.quotationId}_v${quotation.version}.pdf`);
+    try {
+      await downloadQuotationPDF(quotationData.quotation, quotationData.project);
+    } catch (e: any) {
+      alert(`Could not generate the PDF: ${e.message}`);
+    }
   };
 
   if (loading) {
@@ -181,7 +159,8 @@ export default function StudentQuotationDetailPage({
     );
   }
 
-  const { quotation, project, versionHistory } = quotationData;
+  const { quotation, project, versionHistory, latestVersionId } = quotationData;
+  const isSuperseded = quotation.status === "CANCELLED" && latestVersionId && latestVersionId !== quotation._id;
   const isActionable = ["SENT", "VIEWED"].includes(quotation.status);
 
   return (
@@ -227,7 +206,7 @@ export default function StudentQuotationDetailPage({
             </div>
             <h1 className="text-xl font-bold text-slate-900 mt-2">Commercial Project Proposal</h1>
             <p className="text-xs text-slate-500">
-              NexusDev Solutions Pvt Ltd &bull; Issued for {project.collegeName}
+              Issued for {project.collegeName}
             </p>
           </div>
 
@@ -239,6 +218,25 @@ export default function StudentQuotationDetailPage({
             <span>Download Official PDF</span>
           </button>
         </div>
+
+        {versionHistory?.length > 1 && (
+          <div className="py-4 border-b border-slate-100 text-xs flex flex-wrap items-center gap-2">
+            <span className="font-bold uppercase tracking-wider text-[10px] text-slate-400">Versions</span>
+            {versionHistory.map((v: any) => (
+              <Link
+                key={v._id}
+                href={`/student/quotations/${v._id}`}
+                className={`px-2.5 py-1 rounded-lg border ${
+                  v._id === quotation._id
+                    ? "bg-indigo-50 border-indigo-300 text-indigo-800 font-bold"
+                    : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
+                }`}
+              >
+                v{v.version} &bull; ₹{v.total?.toLocaleString()}
+              </Link>
+            ))}
+          </div>
+        )}
 
         {/* Project & Client summary */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 py-6 border-b border-slate-100 text-xs">
@@ -303,7 +301,7 @@ export default function StudentQuotationDetailPage({
                 </div>
               )}
               <div className="flex justify-between text-slate-600">
-                <span>Tax / GST (18%):</span>
+                <span>Tax / GST ({quotation.taxPercentage}%):</span>
                 <span>₹{quotation.tax?.toLocaleString()}</span>
               </div>
               <div className="flex justify-between text-sm font-bold text-indigo-700 pt-2 border-t border-slate-200">
@@ -329,6 +327,34 @@ export default function StudentQuotationDetailPage({
             <p className="text-slate-500 whitespace-pre-wrap leading-relaxed">{quotation.terms}</p>
           </div>
         </div>
+
+        {isSuperseded && (
+          <div className="mt-6 p-4 rounded-xl bg-slate-100 border border-slate-300 text-slate-700 text-xs flex items-center justify-between gap-3">
+            <span>This version has been replaced by a newer revision and can no longer be accepted.</span>
+            <Link href={`/student/quotations/${latestVersionId}`} className="font-semibold text-indigo-700 underline whitespace-nowrap">
+              View latest version &rarr;
+            </Link>
+          </div>
+        )}
+
+        {quotation.status === "CHANGES_REQUESTED" && (
+          <div className="mt-6 p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs">
+            You requested changes to this quotation. Our team is preparing a revised version.
+            {quotation.requestedChanges && <p className="mt-2 italic">&quot;{quotation.requestedChanges}&quot;</p>}
+          </div>
+        )}
+
+        {quotation.status === "REJECTED" && (
+          <div className="mt-6 p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs">
+            You rejected this quotation{quotation.rejectionReason ? `: "${quotation.rejectionReason}"` : "."}
+          </div>
+        )}
+
+        {quotation.status === "EXPIRED" && (
+          <div className="mt-6 p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs">
+            This quotation has expired. Please contact the admin for a refreshed quotation.
+          </div>
+        )}
 
         {/* Action Controls for Student (Accept, Reject, Request Changes) */}
         {isActionable && (

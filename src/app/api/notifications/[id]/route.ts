@@ -1,7 +1,9 @@
+import { handleApiError } from "@/lib/api";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import { Notification } from "@/models/Notification";
+import { isObjectId } from "@/lib/validation";
 
 export async function PATCH(
   req: NextRequest,
@@ -14,6 +16,9 @@ export async function PATCH(
     }
 
     const { id } = await params;
+    if (!isObjectId(id)) {
+      return NextResponse.json({ error: "Notification not found" }, { status: 404 });
+    }
     await connectToDatabase();
 
     const notif = await Notification.findOne({ _id: id, userId: session.userId });
@@ -26,6 +31,6 @@ export async function PATCH(
 
     return NextResponse.json({ success: true, notification: notif });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return handleApiError(err);
   }
 }

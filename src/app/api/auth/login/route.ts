@@ -2,17 +2,27 @@ import { NextRequest, NextResponse } from "next/server";
 import connectToDatabase from "@/lib/db";
 import { User } from "@/models/User";
 import { StudentProfile } from "@/models/StudentProfile";
-import { verifyPassword, signToken } from "@/lib/auth";
+import { verifyPassword, signToken, sessionCookieOptions, SESSION_COOKIE } from "@/lib/auth";
+import { clearHits, isRateLimited, recordHit } from "@/lib/rate-limit";
 import { logActivity } from "@/lib/activity";
 
 export async function POST(req: NextRequest) {
   try {
     const { email, password, portal } = await req.json();
 
-    if (!email || !password) {
+    if (typeof email !== "string" || typeof password !== "string" || !email || !password) {
       return NextResponse.json(
         { error: "Email and password are required." },
         { status: 400 }
+      );
+    }
+
+    // Brute-force protection: 8 failed attempts per account within 15 minutes locks sign-in for the window
+    const throttleKey = `login:${email.toLowerCase().trim()}`;
+    if (isRateLimited(throttleKey, 8, 15 * 60 * 1000)) {
+      return NextResponse.json(
+        { error: "Too many failed sign-in attempts. Please wait 15 minutes or reset your password." },
+        { status: 429 }
       );
     }
 
@@ -20,6 +30,16 @@ export async function POST(req: NextRequest) {
 
     const user = await User.findOne({ email: email.toLowerCase().trim() });
     if (!user) {
+      recordHit(throttleKey);
+      return NextResponse.json(
+        { error: "Invalid email or password." },
+        { status: 401 }
+      );
+    }
+
+    const isMatch = await verifyPassword(password, user.passwordHash);
+    if (!isMatch) {
+      recordHit(throttleKey);
       return NextResponse.json(
         { error: "Invalid email or password." },
         { status: 401 }
@@ -46,13 +66,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const isMatch = await verifyPassword(password, user.passwordHash);
-    if (!isMatch) {
-      return NextResponse.json(
-        { error: "Invalid email or password." },
-        { status: 401 }
-      );
-    }
+    clearHits(throttleKey);
 
     // If student, find profile to get ambassadorId
     let ambassadorId: string | undefined;
@@ -93,19 +107,13 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    response.cookies.set("auth_token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 7, // 7 days
-    });
+    response.cookies.set(SESSION_COOKIE, token, sessionCookieOptions());
 
     return response;
   } catch (err: any) {
     console.error("Login error:", err);
     return NextResponse.json(
-      { error: "An unexpected error occurred during login." },
+      { error: err.message || "An unexpected error occurred during login." },
       { status: 500 }
     );
   }

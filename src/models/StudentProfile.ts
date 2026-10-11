@@ -14,7 +14,7 @@ export interface IStudentProfile extends Document {
   joiningDate: Date;
   referralCode: string;
   profilePhoto?: string;
-  status: "ACTIVE" | "INACTIVE" | "SUSPENDED";
+  status: "ACTIVE" | "INACTIVE" | "DISABLED" | "SUSPENDED";
   createdAt: Date;
   updatedAt: Date;
 }
@@ -47,7 +47,7 @@ const StudentProfileSchema = new Schema<IStudentProfile>(
     profilePhoto: { type: String },
     status: {
       type: String,
-      enum: ["ACTIVE", "INACTIVE", "SUSPENDED"],
+      enum: ["ACTIVE", "INACTIVE", "DISABLED", "SUSPENDED"],
       default: "ACTIVE",
     },
   },

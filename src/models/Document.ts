@@ -19,6 +19,8 @@ export interface IDocumentItem extends Document {
   fileUrl: string;
   fileType: string;
   fileSize: number;
+  /** Raw file bytes (PDFs are stored in MongoDB; excluded from queries unless explicitly selected). */
+  data?: Buffer;
   category: DocumentCategory;
   createdAt: Date;
 }
@@ -40,6 +42,7 @@ const DocumentSchema = new Schema<IDocumentItem>(
     fileUrl: { type: String, required: true },
     fileType: { type: String, required: true },
     fileSize: { type: Number, required: true },
+    data: { type: Buffer, select: false },
     category: {
       type: String,
       enum: DOCUMENT_CATEGORIES,

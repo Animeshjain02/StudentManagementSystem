@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { handleApiError } from "@/lib/api";
 import { getSession } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import { Quotation } from "@/models/Quotation";
@@ -8,6 +9,8 @@ import { User } from "@/models/User";
 import { logActivity } from "@/lib/activity";
 import { notifyAdmins } from "@/lib/notification";
 import { sendEmail, EmailTemplates } from "@/lib/email";
+import { ACTIONABLE_STATUSES, PRE_APPROVAL_STATUSES } from "@/lib/quotation";
+import { isObjectId } from "@/lib/validation";
 
 export async function POST(
   req: NextRequest,
@@ -19,59 +22,75 @@ export async function POST(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // RULE 2: Only Student can accept quotation
-    if (session.role !== "STUDENT") {
-      return NextResponse.json(
-        { error: "Forbidden: Only the assigned student can accept this quotation." },
-        { status: 403 }
-      );
-    }
-
     const { id } = await params;
+    if (!isObjectId(id)) {
+      return NextResponse.json({ error: "Quotation not found." }, { status: 404 });
+    }
     await connectToDatabase();
 
-    const quotation = await Quotation.findById(id).populate("projectId");
-    if (!quotation) {
+    const found = await Quotation.findById(id).populate("projectId");
+    if (!found || !found.sentAt) {
       return NextResponse.json({ error: "Quotation not found." }, { status: 404 });
     }
 
-    const project = quotation.projectId as any;
+    const project = found.projectId as any;
 
-    // Check ownership
-    if (project.studentId.toString() !== session.userId) {
+    // Check authorization: Student ambassador who created the project, or student/admin session
+    const isOwner = session && session.userId === project.studentId?.toString();
+    const isStudent = session && session.role === "STUDENT";
+    const isAdmin = session && session.role === "ADMIN";
+
+    if (!isOwner && !isStudent && !isAdmin) {
       return NextResponse.json(
-        { error: "Forbidden: You are not authorized to accept this quotation." },
+        { error: "Forbidden: Only the student ambassador who created this project can accept this quotation." },
         { status: 403 }
       );
     }
 
+    if (found.status === "ACCEPTED") {
+      return NextResponse.json({ error: "This quotation has already been accepted." }, { status: 400 });
+    }
+
     // RULE 3: Expiration check
-    if (new Date() > new Date(quotation.validUntil)) {
-      quotation.status = "EXPIRED";
-      await quotation.save();
+    if (new Date() > new Date(found.validUntil)) {
+      if (ACTIONABLE_STATUSES.includes(found.status)) {
+        found.status = "EXPIRED";
+        await found.save();
+      }
       return NextResponse.json(
         { error: "This quotation has expired and can no longer be accepted. Please contact admin for a refreshed quotation." },
         { status: 400 }
       );
     }
 
-    if (quotation.status === "ACCEPTED") {
+    // Only a quotation that is currently awaiting the student's answer can be accepted
+    // (not changes-requested, rejected, superseded by a newer version, ...).
+    // The status check is part of the update so two concurrent clicks cannot both succeed.
+    const quotation = await Quotation.findOneAndUpdate(
+      { _id: found._id, status: { $in: ACTIONABLE_STATUSES } },
+      { $set: { status: "ACCEPTED", acceptedAt: new Date() } },
+      { new: true }
+    );
+    if (!quotation) {
+      const reason: Record<string, string> = {
+        CHANGES_REQUESTED: "You requested changes to this quotation; please wait for the revised version.",
+        REJECTED: "This quotation was rejected and can no longer be accepted.",
+        CANCELLED: "This quotation was superseded by a newer version. Please open the latest version.",
+        EXPIRED: "This quotation has expired.",
+      };
       return NextResponse.json(
-        { error: "This quotation has already been accepted." },
+        { error: reason[found.status] || "This quotation can no longer be accepted." },
         { status: 400 }
       );
     }
 
-    // Accept quotation
-    quotation.status = "ACCEPTED";
-    quotation.acceptedAt = new Date();
-    await quotation.save();
-
-    // Automatically update project to APPROVED and set approvedBudget (Requirement 17 & 21)
-    await Project.findByIdAndUpdate(project._id, {
-      status: "APPROVED",
-      approvedBudget: quotation.total,
-    });
+    // Approve the project and fix its budget (Requirement 17 & 21). A project that is already
+    // in delivery (e.g. a change-order quotation) keeps its stage but gets the new budget.
+    const update: Record<string, unknown> = { approvedBudget: quotation.total };
+    if (PRE_APPROVAL_STATUSES.includes(project.status) || project.status === "REJECTED") {
+      update.status = "APPROVED";
+    }
+    await Project.findByIdAndUpdate(project._id, update);
 
     // Record response
     await QuotationResponse.create({
@@ -115,6 +134,6 @@ export async function POST(
       quotation,
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return handleApiError(err);
   }
 }

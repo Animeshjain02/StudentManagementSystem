@@ -52,5 +52,8 @@ const PaymentSchema = new Schema<IPayment>(
   { timestamps: true }
 );
 
+PaymentSchema.index({ projectId: 1, paymentDate: -1 });
+PaymentSchema.index({ createdAt: -1 });
+
 export const Payment: Model<IPayment> =
   mongoose.models.Payment || mongoose.model<IPayment>("Payment", PaymentSchema);

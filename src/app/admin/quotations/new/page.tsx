@@ -1,5 +1,6 @@
 "use client";
 
+import { budgetLabel } from "@/lib/format";
 import React, { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -71,23 +72,46 @@ function QuotationFormContent() {
   );
 
   useEffect(() => {
-    fetch("/api/projects?limit=50")
-      .then((res) => res.json())
-      .then((data) => {
-        setProjects(data.projects || []);
-        if (!selectedProjectId && data.projects?.length > 0) {
-          setSelectedProjectId(data.projects[0]._id);
+    async function load() {
+      try {
+        const [projRes, settingsRes] = await Promise.all([
+          fetch("/api/projects?limit=200"),
+          fetch("/api/admin/settings"),
+        ]);
+        const projData = await projRes.json();
+        let list: any[] = projData.projects || [];
+
+        // A project linked from elsewhere must be selectable even if it is not in the first page of results
+        if (preselectedProjectId && !list.some((p) => p._id === preselectedProjectId)) {
+          const one = await fetch(`/api/projects/${preselectedProjectId}`);
+          if (one.ok) list = [(await one.json()).project, ...list];
         }
-      })
-      .catch(console.error)
-      .finally(() => setLoadingProjects(false));
+        setProjects(list);
+        if (!selectedProjectId && list.length > 0) setSelectedProjectId(list[0]._id);
+
+        // Company defaults configured in Settings
+        if (settingsRes.ok) {
+          const { settings } = await settingsRes.json();
+          if (typeof settings?.taxPercentage === "number") setTaxPercentage(settings.taxPercentage);
+          if (settings?.defaultQuotationValidityDays) {
+            setValidUntil(new Date(Date.now() + settings.defaultQuotationValidityDays * 86400000).toISOString().split("T")[0]);
+          }
+          if (settings?.defaultPaymentTerms) setPaymentTerms(settings.defaultPaymentTerms);
+        }
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoadingProjects(false);
+      }
+    }
+    load();
   }, []);
 
   // Automatic Calculation (Requirement 14)
   const subtotal = items.reduce((acc, it) => acc + (it.quantity * it.unitPrice || 0), 0);
   const validDiscount = Math.min(subtotal, Math.max(0, Number(discount) || 0));
   const taxable = subtotal - validDiscount;
-  const tax = Math.round((taxable * (Number(taxPercentage) || 18)) / 100);
+  const tax = Math.round((taxable * (Number.isFinite(Number(taxPercentage)) ? Number(taxPercentage) : 0)) / 100);
   const finalTotal = taxable + tax;
 
   const handleItemChange = (index: number, field: keyof LineItem, val: any) => {
@@ -126,6 +150,28 @@ function QuotationFormContent() {
   const handleSubmit = async (sendImmediately: boolean) => {
     if (!selectedProjectId) {
       setError("Please select a project.");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    const badItem = items.findIndex((it) => !it.description.trim());
+    if (badItem !== -1) {
+      setError(`Line item ${badItem + 1} needs a description.`);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    if (!(Number(taxPercentage) >= 0 && Number(taxPercentage) <= 100)) {
+      setError("Tax percentage must be between 0 and 100.");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    if (!validUntil || validUntil < new Date().toISOString().split("T")[0]) {
+      setError("The 'Valid Until' date must be today or later.");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    if (!deliveryTimeline.trim() || !paymentTerms.trim()) {
+      setError("Delivery timeline and payment terms are required.");
+      window.scrollTo({ top: 0, behavior: "smooth" });
       return;
     }
 
@@ -156,6 +202,7 @@ function QuotationFormContent() {
       router.push(`/admin/quotations/${data.quotation._id}`);
     } catch (err: any) {
       setError(err.message);
+      window.scrollTo({ top: 0, behavior: "smooth" });
     } finally {
       setSubmitting(false);
     }
@@ -195,6 +242,7 @@ function QuotationFormContent() {
               onChange={(e) => setSelectedProjectId(e.target.value)}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900 bg-white font-medium focus:ring-2 focus:ring-indigo-500"
             >
+              {loadingProjects && <option value="">Loading projects...</option>}
               {projects.map((p) => (
                 <option key={p._id} value={p._id}>
                   {p.projectId} - {p.projectName} ({p.collegeName})
@@ -210,8 +258,7 @@ function QuotationFormContent() {
               </span>
               <div className="font-semibold text-slate-900">{selectedProject.projectName}</div>
               <div className="text-slate-500 mt-0.5">
-                Client: {selectedProject.clientName} &bull; Expected Budget: ₹
-                {selectedProject.expectedBudget?.toLocaleString()}
+                Client: {selectedProject.clientName} &bull; Budget: {budgetLabel(selectedProject)}
               </div>
             </div>
           )}
@@ -317,7 +364,7 @@ function QuotationFormContent() {
                 min="0"
                 max={subtotal}
                 value={discount}
-                onChange={(e) => setDiscount(Number(e.target.value))}
+                onChange={(e) => setDiscount(Math.max(0, Number(e.target.value) || 0))}
                 className="w-24 px-2 py-1 border border-slate-300 rounded text-right font-medium"
               />
             </div>
@@ -327,9 +374,9 @@ function QuotationFormContent() {
               <input
                 type="number"
                 min="0"
-                max="50"
+                max="100"
                 value={taxPercentage}
-                onChange={(e) => setTaxPercentage(Number(e.target.value))}
+                onChange={(e) => setTaxPercentage(Math.min(100, Math.max(0, Number(e.target.value) || 0)))}
                 className="w-24 px-2 py-1 border border-slate-300 rounded text-right font-medium"
               />
             </div>
@@ -359,6 +406,7 @@ function QuotationFormContent() {
             <input
               type="date"
               required
+              min={new Date().toISOString().split("T")[0]}
               value={validUntil}
               onChange={(e) => setValidUntil(e.target.value)}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900"
@@ -411,7 +459,7 @@ function QuotationFormContent() {
           type="button"
           onClick={() => handleSubmit(false)}
           disabled={submitting}
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-900 text-white font-semibold text-xs shadow-xs"
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-900 text-white font-semibold text-xs shadow-xs disabled:opacity-50"
         >
           <Save className="w-4 h-4" />
           <span>Save as Draft</span>
@@ -420,7 +468,7 @@ function QuotationFormContent() {
           type="button"
           onClick={() => handleSubmit(true)}
           disabled={submitting}
-          className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-md shadow-indigo-600/20"
+          className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-md shadow-indigo-600/20 disabled:opacity-50"
         >
           <Send className="w-4 h-4" />
           <span>Send Quotation to Student</span>

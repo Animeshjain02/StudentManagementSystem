@@ -1,5 +1,6 @@
 "use client";
 
+import { budgetLabel } from "@/lib/format";
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { AdminLayout } from "@/components/layouts/AdminLayout";
@@ -15,7 +16,7 @@ export default function AdminApprovalsPage() {
     async function loadApprovals() {
       try {
         const [projRes, quotRes] = await Promise.all([
-          fetch("/api/projects?status=AWAITING_APPROVAL"),
+          fetch("/api/projects?status=QUOTATION_SENT,AWAITING_APPROVAL&limit=100"),
           fetch("/api/quotations?status=CHANGES_REQUESTED"),
         ]);
         const projData = await projRes.json();
@@ -113,7 +114,7 @@ export default function AdminApprovalsPage() {
                       <StatusBadge status={p.status} size="sm" />
                     </div>
                     <div className="text-slate-500">
-                      College: {p.collegeName} &bull; Client: {p.clientName} &bull; Expected Budget: ₹{p.expectedBudget?.toLocaleString()}
+                      College: {p.collegeName} &bull; Client: {p.clientName} &bull; Budget: {budgetLabel(p)}
                     </div>
                   </div>
 

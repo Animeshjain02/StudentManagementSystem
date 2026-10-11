@@ -1,3 +1,4 @@
+import { handleApiError } from "@/lib/api";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
@@ -25,12 +26,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
+    if (user.status !== "ACTIVE") {
+      return NextResponse.json({ error: "Your account has been deactivated. Please contact admin." }, { status: 403 });
+    }
+
     let profile = null;
     if (user.role === "STUDENT") {
       profile = await StudentProfile.findOne({ userId: user._id });
     }
-
-    const isAuthDisabled = process.env.DISABLE_AUTH === "true";
 
     return NextResponse.json({
       user: {
@@ -38,13 +41,13 @@ export async function GET(req: NextRequest) {
         name: user.name,
         email: user.email,
         role: user.role,
-        mustChangePassword: isAuthDisabled ? false : user.mustChangePassword,
+        mustChangePassword: false,
         status: user.status,
         lastLogin: user.lastLogin,
         profile,
       },
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return handleApiError(err);
   }
 }

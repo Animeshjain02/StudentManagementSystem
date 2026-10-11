@@ -3,11 +3,13 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "seed": "tsx src/lib/seed.ts"
+    "seed": "tsx src/lib/seed.ts",
+    "test:e2e": "tsx tests/e2e-workflow.test.ts",
+    "test:qa": "tsx tests/qa-regression.test.ts"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

@@ -1,3 +1,4 @@
+import { handleApiError } from "@/lib/api";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
@@ -8,6 +9,8 @@ import { Quotation } from "@/models/Quotation";
 import { Payment } from "@/models/Payment";
 import { ActivityLog } from "@/models/ActivityLog";
 import { logActivity } from "@/lib/activity";
+import { isObjectId, str } from "@/lib/validation";
+import { validateStudentFields } from "@/lib/field-rules";
 
 export async function GET(
   req: NextRequest,
@@ -20,9 +23,12 @@ export async function GET(
     }
 
     const { id } = await params;
+    if (!isObjectId(id)) {
+      return NextResponse.json({ error: "Student not found" }, { status: 404 });
+    }
     await connectToDatabase();
 
-    const user = await User.findById(id).select("-passwordHash");
+    const user = await User.findOne({ _id: id, role: "STUDENT" }).select("-passwordHash");
     if (!user) {
       return NextResponse.json({ error: "Student not found" }, { status: 404 });
     }
@@ -68,7 +74,7 @@ export async function GET(
       },
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return handleApiError(err);
   }
 }
 
@@ -83,26 +89,50 @@ export async function PATCH(
     }
 
     const { id } = await params;
+    if (!isObjectId(id)) {
+      return NextResponse.json({ error: "Student not found" }, { status: 404 });
+    }
     const body = await req.json();
     await connectToDatabase();
 
-    const user = await User.findById(id);
+    // Only ambassador accounts can be managed here (never the admin account itself)
+    const user = await User.findOne({ _id: id, role: "STUDENT" });
     if (!user) {
       return NextResponse.json({ error: "Student not found" }, { status: 404 });
     }
 
-    if (body.name) user.name = body.name.trim();
+    // Validate before saving anything so the user and profile can never end up half-updated
+    if (body.status !== undefined && !["ACTIVE", "INACTIVE", "DISABLED"].includes(body.status)) {
+      return NextResponse.json({ error: "Invalid status. Use ACTIVE, INACTIVE or DISABLED." }, { status: 400 });
+    }
+    const fieldErrors = validateStudentFields(
+      {
+        name: body.name,
+        phone: body.phone,
+        collegeName: body.collegeName,
+        university: body.university,
+        course: body.course,
+        branch: body.branch,
+        semester: body.semester,
+      },
+      false
+    );
+    if (Object.keys(fieldErrors).length) {
+      return NextResponse.json({ error: Object.values(fieldErrors)[0], fieldErrors }, { status: 400 });
+    }
+
+    if (body.name) user.name = str(body.name);
     if (body.status) user.status = body.status;
     await user.save();
 
     const profile = await StudentProfile.findOne({ userId: user._id });
     if (profile) {
-      if (body.phone) profile.phone = body.phone.trim();
-      if (body.collegeName) profile.collegeName = body.collegeName.trim();
-      if (body.university) profile.university = body.university.trim();
-      if (body.course) profile.course = body.course.trim();
-      if (body.branch) profile.branch = body.branch.trim();
-      if (body.semester) profile.semester = body.semester.trim();
+      if (str(body.phone)) profile.phone = str(body.phone);
+      if (str(body.collegeName)) profile.collegeName = str(body.collegeName);
+      if (str(body.university)) profile.university = str(body.university);
+      if (str(body.course)) profile.course = str(body.course);
+      if (str(body.branch)) profile.branch = str(body.branch);
+      if (str(body.semester)) profile.semester = str(body.semester);
       if (body.status) profile.status = body.status;
       await profile.save();
     }
@@ -114,8 +144,15 @@ export async function PATCH(
       description: `Admin updated details for student ${user.name}.`,
     });
 
-    return NextResponse.json({ success: true, message: "Student updated successfully." });
+    try {
+      const { invalidateAdminAnalyticsCache } = await import("@/lib/server-admin-analytics");
+      invalidateAdminAnalyticsCache();
+    } catch (e) {
+      console.error(e);
+    }
+
+    return NextResponse.json({ success: true, message: "Student updated successfully.", status: user.status });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return handleApiError(err);
   }
 }

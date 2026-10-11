@@ -1,5 +1,6 @@
 "use client";
 
+import { budgetLabel } from "@/lib/format";
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { AdminLayout } from "@/components/layouts/AdminLayout";
@@ -14,6 +15,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FileSpreadsheet,
+  Plus,
 } from "lucide-react";
 
 export default function AdminProjectsPage() {
@@ -109,6 +111,14 @@ export default function AdminProjectsPage() {
             <Download className="w-3.5 h-3.5 text-slate-500" />
             <span>Export CSV</span>
           </a>
+
+          <Link
+            href="/admin/projects/new"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-xs shadow-indigo-200 transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>New Project</span>
+          </Link>
         </div>
       </div>
 
@@ -148,7 +158,13 @@ export default function AdminProjectsPage() {
                       {proj.projectName}
                     </td>
                     <td className="py-3.5 px-4 text-slate-800">
-                      {proj.studentId?.name || "Student"}
+                      {proj.isDirect || proj.source === "DIRECT" ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200">
+                          Direct
+                        </span>
+                      ) : (
+                        proj.studentId?.name || "Student"
+                      )}
                     </td>
                     <td className="py-3.5 px-4 text-slate-600 max-w-xs truncate">
                       {proj.collegeName}
@@ -159,7 +175,7 @@ export default function AdminProjectsPage() {
                       </span>
                     </td>
                     <td className="py-3.5 px-4 font-bold text-slate-900">
-                      ₹{(proj.approvedBudget || proj.expectedBudget)?.toLocaleString()}
+                      {budgetLabel(proj)}
                     </td>
                     <td className="py-3.5 px-4">
                       <StatusBadge status={proj.status} size="sm" />

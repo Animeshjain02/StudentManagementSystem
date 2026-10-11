@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { handleApiError } from "@/lib/api";
 import { getSession } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import { Quotation } from "@/models/Quotation";
-import { Project } from "@/models/Project";
-import { User } from "@/models/User";
-import { logActivity } from "@/lib/activity";
-import { createNotification } from "@/lib/notification";
-import { sendEmail, EmailTemplates } from "@/lib/email";
+import { dispatchQuotation } from "@/lib/quotation";
+import { isObjectId } from "@/lib/validation";
 
 export async function POST(
   req: NextRequest,
@@ -19,54 +17,43 @@ export async function POST(
     }
 
     const { id } = await params;
+    if (!isObjectId(id)) {
+      return NextResponse.json({ error: "Quotation not found." }, { status: 404 });
+    }
     await connectToDatabase();
 
-    const quotation = await Quotation.findById(id).populate("projectId");
+    const quotation = await Quotation.findById(id);
     if (!quotation) {
       return NextResponse.json({ error: "Quotation not found." }, { status: 404 });
     }
 
-    const project = quotation.projectId as any;
-    quotation.status = "SENT";
-    quotation.sentAt = new Date();
-    await quotation.save();
-
-    // Update project status to QUOTATION_SENT
-    await Project.findByIdAndUpdate(project._id, { status: "QUOTATION_SENT" });
-
-    // Student notification
-    await createNotification({
-      userId: project.studentId,
-      title: "New Quotation Ready",
-      message: `Quotation ${quotation.quotationId} (₹${quotation.total.toLocaleString()}) has been sent for project ${project.projectName}.`,
-      type: "QUOTATION",
-      relatedEntityId: quotation.quotationId,
-      relatedEntityType: "QUOTATION",
-    });
-
-    // Send email to student
-    const student = await User.findById(project.studentId);
-    if (student) {
-      const tmpl = EmailTemplates.quotationSent(student.name, project.projectName, quotation.quotationId, quotation.total);
-      await sendEmail({ to: student.email, subject: tmpl.subject, html: tmpl.html });
+    // Only a draft can be sent. Anything else was already sent (use "Revise" to issue a new version).
+    if (quotation.status !== "DRAFT") {
+      return NextResponse.json(
+        {
+          error:
+            quotation.status === "ACCEPTED"
+              ? "This quotation has already been accepted and cannot be re-sent."
+              : `Only draft quotations can be sent. This one is ${quotation.status}; issue a revised version instead.`,
+        },
+        { status: 400 }
+      );
+    }
+    if (quotation.validUntil.getTime() < Date.now()) {
+      return NextResponse.json(
+        { error: "This draft's validity date has passed. Please revise it with a new valid-until date first." },
+        { status: 400 }
+      );
     }
 
-    await logActivity({
-      userId: session.userId,
-      role: "ADMIN",
-      action: "QUOTATION_SENT",
-      projectId: project._id,
-      entityId: quotation.quotationId,
-      entityType: "QUOTATION",
-      description: `Admin sent quotation ${quotation.quotationId} to student.`,
-    });
+    const sent = await dispatchQuotation(id, session.userId);
 
     return NextResponse.json({
       success: true,
       message: "Quotation sent successfully to student.",
-      quotation,
+      quotation: sent,
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return handleApiError(err);
   }
 }

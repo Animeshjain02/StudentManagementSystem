@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { handleApiError } from "@/lib/api";
 import { getSession } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
-import { Milestone } from "@/models/Milestone";
+import { Milestone, MILESTONE_STATUSES } from "@/models/Milestone";
 import { Project } from "@/models/Project";
 import { logActivity } from "@/lib/activity";
+import { isObjectId, num, parseDate, str } from "@/lib/validation";
 
 export async function POST(
   req: NextRequest,
@@ -17,30 +19,56 @@ export async function POST(
 
     const { id } = await params;
     const body = await req.json();
-    const { name, description, startDate, dueDate, assignedTo, progress, status } = body;
+    const { description, assignedTo, progress, status } = body;
+    const name = str(body.name);
 
-    if (!name || !startDate || !dueDate) {
+    if (!name || !body.startDate || !body.dueDate) {
       return NextResponse.json(
         { error: "Milestone name, start date, and due date are required." },
         { status: 400 }
       );
     }
 
+    const startDate = parseDate(body.startDate);
+    const dueDate = parseDate(body.dueDate);
+    if (!startDate || !dueDate) {
+      return NextResponse.json({ error: "Please provide valid start and due dates." }, { status: 400 });
+    }
+    if (dueDate.getTime() < startDate.getTime()) {
+      return NextResponse.json({ error: "The due date cannot be earlier than the start date." }, { status: 400 });
+    }
+
+    const milestoneStatus = status || "PENDING";
+    if (!(MILESTONE_STATUSES as readonly string[]).includes(milestoneStatus)) {
+      return NextResponse.json({ error: "Invalid milestone status." }, { status: 400 });
+    }
+
+    let pct = 0;
+    if (progress !== undefined && progress !== "") {
+      pct = num(progress);
+      if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+        return NextResponse.json({ error: "Progress must be a number between 0 and 100." }, { status: 400 });
+      }
+    }
+
     await connectToDatabase();
-    const project = await Project.findById(id);
+    // Accept the Mongo id or the human-readable PRJ- code
+    const project = isObjectId(id) ? await Project.findById(id) : await Project.findOne({ projectId: id });
     if (!project) {
       return NextResponse.json({ error: "Project not found." }, { status: 404 });
     }
 
+    const done = milestoneStatus === "COMPLETED" || pct === 100;
     const milestone = await Milestone.create({
       projectId: project._id,
-      name: name.trim(),
-      description: description?.trim() || "",
-      startDate: new Date(startDate),
-      dueDate: new Date(dueDate),
-      assignedTo: assignedTo?.trim() || "Engineering Team",
-      progress: Number(progress) || 0,
-      status: status || "PENDING",
+      name,
+      description: str(description),
+      startDate,
+      dueDate,
+      assignedTo: str(assignedTo) || "Engineering Team",
+      progress: done ? 100 : pct,
+      status: done ? "COMPLETED" : milestoneStatus,
+      completedAt: done ? new Date() : undefined,
     });
 
     await logActivity({
@@ -59,6 +87,6 @@ export async function POST(
       milestone,
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return handleApiError(err);
   }
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { budgetLabel } from "@/lib/format";
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { AdminLayout } from "@/components/layouts/AdminLayout";
@@ -35,7 +36,7 @@ export default function AdminPaymentsPage() {
     try {
       const [payRes, projRes] = await Promise.all([
         fetch("/api/payments"),
-        fetch("/api/projects?limit=50"),
+        fetch("/api/projects?limit=200"),
       ]);
 
       const payData = await payRes.json();
@@ -230,7 +231,7 @@ export default function AdminPaymentsPage() {
                 >
                   {projects.map((p) => (
                     <option key={p._id} value={p._id}>
-                      {p.projectId} - {p.projectName} (₹{(p.approvedBudget || p.expectedBudget)?.toLocaleString()})
+                      {p.projectId} - {p.projectName} ({budgetLabel(p)})
                     </option>
                   ))}
                 </select>
@@ -265,19 +266,7 @@ export default function AdminPaymentsPage() {
                 </select>
               </div>
 
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">
-                  Transaction Reference / UTR Number *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={transactionReference}
-                  onChange={(e) => setTransactionReference(e.target.value)}
-                  placeholder="e.g. UTR-AXIS-881923"
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg font-mono text-slate-900 focus:ring-2 focus:ring-emerald-500"
-                />
-              </div>
+
 
               <div>
                 <label className="block font-medium text-slate-700 mb-1">Payment Date *</label>

@@ -1,7 +1,9 @@
+import { handleApiError } from "@/lib/api";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import { ActivityLog } from "@/models/ActivityLog";
+import { parsePagination } from "@/lib/validation";
 
 export async function GET(req: NextRequest) {
   try {
@@ -14,11 +16,11 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const action = searchParams.get("action");
     const role = searchParams.get("role");
-    const limit = parseInt(searchParams.get("limit") || "50");
+    const { limit } = parsePagination(searchParams, 50, 500);
 
     const query: any = {};
     if (action) query.action = action;
-    if (role) query.role = role;
+    if (role && ["ADMIN", "STUDENT", "SYSTEM"].includes(role)) query.role = role;
 
     const logs = await ActivityLog.find(query)
       .populate("userId", "name email role")
@@ -28,6 +30,6 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ logs });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return handleApiError(err);
   }
 }

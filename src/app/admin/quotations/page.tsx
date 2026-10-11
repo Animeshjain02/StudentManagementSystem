@@ -49,6 +49,7 @@ export default function AdminQuotationsPage() {
           <option value="CHANGES_REQUESTED">Changes Requested</option>
           <option value="REJECTED">Rejected</option>
           <option value="EXPIRED">Expired</option>
+          <option value="CANCELLED">Superseded / Cancelled</option>
         </select>
 
         <Link

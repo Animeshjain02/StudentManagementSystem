@@ -1,13 +1,17 @@
+import { randomInt } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
+import { handleApiError } from "@/lib/api";
 import { getSession } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import { User } from "@/models/User";
 import { StudentProfile } from "@/models/StudentProfile";
 import { Project } from "@/models/Project";
-import { hashPassword } from "@/lib/auth";
+import { hashPassword, validatePasswordStrength } from "@/lib/auth";
 import { logActivity } from "@/lib/activity";
 import { createNotification } from "@/lib/notification";
 import { sendEmail, EmailTemplates } from "@/lib/email";
+import { validateStudentFields } from "@/lib/field-rules";
+import { isDuplicateKeyError, isEmail, nextSequentialId, parsePagination, str } from "@/lib/validation";
 
 export async function GET(req: NextRequest) {
   try {
@@ -21,43 +25,49 @@ export async function GET(req: NextRequest) {
     const search = searchParams.get("search") || "";
     const college = searchParams.get("college") || "";
     const status = searchParams.get("status") || "";
-    const page = parseInt(searchParams.get("page") || "1");
-    const limit = parseInt(searchParams.get("limit") || "10");
+    const { page, limit, skip } = parsePagination(searchParams);
 
     const query: any = { role: "STUDENT" };
     if (status) query.status = status;
 
-    let students = await User.find(query).select("-passwordHash").sort({ createdAt: -1 });
+    // Three queries in total (users, profiles, project counts) instead of two per student.
+    const users = await User.find(query).select("-passwordHash").sort({ createdAt: -1 });
+    const userIds = users.map((u) => u._id);
+    const [profiles, projectCounts] = await Promise.all([
+      StudentProfile.find({ userId: { $in: userIds } }),
+      Project.aggregate([
+        { $match: { studentId: { $in: userIds } } },
+        { $group: { _id: "$studentId", count: { $sum: 1 } } },
+      ]),
+    ]);
+    const profileByUser = new Map(profiles.map((p) => [p.userId.toString(), p]));
+    const countByUser = new Map<string, number>(projectCounts.map((c: any) => [c._id.toString(), c.count]));
 
-    // Join with StudentProfile and Project count
-    const studentData = await Promise.all(
-      students.map(async (u) => {
-        const profile = await StudentProfile.findOne({ userId: u._id });
-        const projectCount = await Project.countDocuments({ studentId: u._id });
-        return {
-          id: u._id.toString(),
-          name: u.name,
-          email: u.email,
-          status: u.status,
-          lastLogin: u.lastLogin,
-          createdAt: u.createdAt,
-          ambassadorId: profile?.ambassadorId || "N/A",
-          collegeName: profile?.collegeName || "N/A",
-          phone: profile?.phone || "N/A",
-          course: profile?.course || "N/A",
-          branch: profile?.branch || "N/A",
-          semester: profile?.semester || "N/A",
-          joiningDate: profile?.joiningDate,
-          referralCode: profile?.referralCode,
-          projectCount,
-        };
-      })
-    );
+    const studentData = users.map((u) => {
+      const profile = profileByUser.get(u._id.toString());
+      return {
+        id: u._id.toString(),
+        name: u.name,
+        email: u.email,
+        status: u.status,
+        lastLogin: u.lastLogin,
+        createdAt: u.createdAt,
+        ambassadorId: profile?.ambassadorId || "N/A",
+        collegeName: profile?.collegeName || "N/A",
+        phone: profile?.phone || "N/A",
+        course: profile?.course || "N/A",
+        branch: profile?.branch || "N/A",
+        semester: profile?.semester || "N/A",
+        joiningDate: profile?.joiningDate,
+        referralCode: profile?.referralCode,
+        projectCount: countByUser.get(u._id.toString()) || 0,
+      };
+    });
 
     // Apply text filters
     let filtered = studentData;
-    if (search) {
-      const q = search.toLowerCase();
+    const q = search.trim().toLowerCase();
+    if (q) {
       filtered = filtered.filter(
         (s) =>
           s.name.toLowerCase().includes(q) ||
@@ -71,7 +81,7 @@ export async function GET(req: NextRequest) {
     }
 
     const total = filtered.length;
-    const paginated = filtered.slice((page - 1) * limit, page * limit);
+    const paginated = filtered.slice(skip, skip + limit);
 
     return NextResponse.json({
       students: paginated,
@@ -83,7 +93,7 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return handleApiError(err);
   }
 }
 
@@ -95,31 +105,60 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const {
-      name,
-      email,
-      phone,
-      collegeName,
-      university,
-      course,
-      branch,
-      semester,
-      collegeId,
-      referralCode,
-      temporaryPassword,
-    } = body;
+    const { university, referralCode } = body;
+    const name = str(body.name);
+    const email = str(body.email).toLowerCase();
+    
+    // Normalize phone number (handle +91, 0, spaces, dashes)
+    const rawPhone = str(body.phone);
+    const cleanDigits = rawPhone.replace(/\D/g, "");
+    const phone = cleanDigits.length === 12 && cleanDigits.startsWith("91")
+      ? cleanDigits.slice(2)
+      : cleanDigits.length === 11 && cleanDigits.startsWith("0")
+      ? cleanDigits.slice(1)
+      : cleanDigits;
 
-    if (!name || !email || !phone || !collegeName || !course || !branch || !semester) {
+    const collegeName = str(body.collegeName);
+    const course = str(body.course) || "B.Tech";
+    const branch = str(body.branch);
+    const semester = str(body.semester) || "1st Year";
+    const collegeId = str(body.collegeId || body.number || body.rollNo);
+
+    if (!name || !email || !phone || !collegeName || !branch) {
       return NextResponse.json(
-        { error: "Please provide all required student and college details." },
+        { error: "Please provide all required details: Name, Email, Phone, College, and Branch." },
         { status: 400 }
       );
+    }
+    if (!/^[6-9][0-9]{9}$/.test(phone)) {
+      return NextResponse.json(
+        { error: "Phone number must be a valid 10-digit Indian mobile number (starting with 6, 7, 8, or 9)." },
+        { status: 400 }
+      );
+    }
+    if (!isEmail(email)) {
+      return NextResponse.json({ error: "Please provide a valid email address." }, { status: 400 });
+    }
+    const fieldErrors = validateStudentFields(
+      { name, phone, collegeName, university: str(university), course, branch, semester, collegeId: str(collegeId), referralCode: str(referralCode) },
+      true
+    );
+    if (Object.keys(fieldErrors).length) {
+      return NextResponse.json({ error: Object.values(fieldErrors)[0], fieldErrors }, { status: 400 });
+    }
+
+    // Password from payload (supports both 'password' and 'temporaryPassword')
+    const passInput = str(body.password || body.temporaryPassword);
+    const tempPass: string = passInput || `Student@${randomInt(100000, 1000000)}`;
+
+    if (tempPass.length < 6) {
+      return NextResponse.json({ error: "Password must be at least 6 characters long." }, { status: 400 });
     }
 
     await connectToDatabase();
 
     // Check duplicate email
-    const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
+    const existingUser = await User.findOne({ email });
     if (existingUser) {
       return NextResponse.json(
         { error: "A user with this email address already exists." },
@@ -127,37 +166,81 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Generate unique Ambassador ID: CA-2026-XXXX
-    const count = await StudentProfile.countDocuments();
-    const year = new Date().getFullYear();
-    const ambassadorId = `CA-${year}-${String(count + 1).padStart(4, "0")}`;
-
-    // Temporary password (default or custom)
-    const tempPass = temporaryPassword || `Student@${Math.floor(1000 + Math.random() * 9000)}`;
     const passwordHash = await hashPassword(tempPass);
 
-    const newUser = await User.create({
-      name: name.trim(),
-      email: email.toLowerCase().trim(),
-      passwordHash,
-      role: "STUDENT",
-      status: "ACTIVE",
-      mustChangePassword: true, // Forces first login password change
-    });
+    let newUser: any;
+    try {
+      newUser = await User.create({
+        name,
+        email,
+        passwordHash,
+        role: "STUDENT",
+        status: "ACTIVE",
+        mustChangePassword: Boolean(body.mustChangePassword ?? false),
+      });
+    } catch (err: any) {
+      if (isDuplicateKeyError(err)) {
+        return NextResponse.json({ error: "A user with this email address already exists." }, { status: 409 });
+      }
+      throw err;
+    }
 
-    const profile = await StudentProfile.create({
-      userId: newUser._id,
-      ambassadorId,
-      phone: phone.trim(),
-      collegeName: collegeName.trim(),
-      university: university?.trim() || "",
-      course: course.trim(),
-      branch: branch.trim(),
-      semester: semester.trim(),
-      collegeId: collegeId?.trim() || "",
-      referralCode: referralCode?.trim() || `REF-${ambassadorId}`,
-      status: "ACTIVE",
-    });
+    // Generate unique Ambassador ID: CA-YYYY-XXXX (retry if a concurrent request took the number)
+    const year = new Date().getFullYear();
+    let profile: any = null;
+    let ambassadorId = str(body.ambassadorId);
+
+    try {
+      if (ambassadorId) {
+        // If a custom ambassador ID was specified by admin
+        profile = await StudentProfile.create({
+          userId: newUser._id,
+          ambassadorId,
+          phone,
+          collegeName,
+          university: str(university),
+          course,
+          branch,
+          semester,
+          collegeId: str(collegeId),
+          referralCode: str(referralCode) || `REF-${ambassadorId}`,
+          status: "ACTIVE",
+        });
+      } else {
+        for (let attempt = 0; attempt < 5 && !profile; attempt++) {
+          ambassadorId = await nextSequentialId(StudentProfile, "ambassadorId", `CA-${year}-`, 4, attempt);
+          try {
+            profile = await StudentProfile.create({
+              userId: newUser._id,
+              ambassadorId,
+              phone,
+              collegeName,
+              university: str(university),
+              course,
+              branch,
+              semester,
+              collegeId: str(collegeId),
+              referralCode: str(referralCode) || `REF-${ambassadorId}`,
+              status: "ACTIVE",
+            });
+          } catch (err: any) {
+            if (!isDuplicateKeyError(err) || attempt === 4) throw err;
+          }
+        }
+      }
+    } catch (err) {
+      // Never leave a login without a profile behind
+      await User.findByIdAndDelete(newUser._id);
+      throw err;
+    }
+
+    // Invalidate analytics cache so new ambassador appears on analytics / ambassadors list immediately
+    try {
+      const { invalidateAdminAnalyticsCache } = await import("@/lib/server-admin-analytics");
+      invalidateAdminAnalyticsCache();
+    } catch (e) {
+      console.error("Cache invalidation failed:", e);
+    }
 
     // Activity Log
     await logActivity({
@@ -172,7 +255,7 @@ export async function POST(req: NextRequest) {
     await createNotification({
       userId: newUser._id,
       title: "Welcome to Campus Ambassador Program!",
-      message: `Your Ambassador ID is ${ambassadorId}. Please change your password on first login.`,
+      message: `Your Ambassador ID is ${ambassadorId}. You can now access your ambassador portal.`,
       type: "SUCCESS",
       relatedEntityId: ambassadorId,
       relatedEntityType: "STUDENT",
@@ -188,7 +271,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      message: "Student account created successfully!",
+      message: "Ambassador account created successfully!",
       student: {
         id: newUser._id.toString(),
         name: newUser.name,
@@ -198,6 +281,6 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return handleApiError(err);
   }
 }

@@ -1,10 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
+import { handleApiError } from "@/lib/api";
 import { getSession } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
-import { Quotation, IQuotationItem } from "@/models/Quotation";
-import { Project } from "@/models/Project";
+import { Quotation } from "@/models/Quotation";
 import { logActivity } from "@/lib/activity";
-import { createNotification } from "@/lib/notification";
+import {
+  computeTotals,
+  dispatchQuotation,
+  effectiveTaxPercentage,
+  expireOverdueQuotations,
+  normalizeItems,
+  validateDiscount,
+  validateTaxPercentage,
+  validateValidUntil,
+} from "@/lib/quotation";
+import { isDuplicateKeyError, isObjectId, str } from "@/lib/validation";
 
 export async function GET(
   req: NextRequest,
@@ -18,9 +28,10 @@ export async function GET(
 
     const { id } = await params;
     await connectToDatabase();
+    await expireOverdueQuotations();
 
     let quotation = null;
-    if (id.match(/^[0-9a-fA-F]{24}$/)) {
+    if (isObjectId(id)) {
       quotation = await Quotation.findById(id).populate("projectId").populate("createdBy", "name email");
     } else {
       // Find latest version by quotationId
@@ -36,12 +47,18 @@ export async function GET(
 
     const project = quotation.projectId as any;
 
-    // Security check: if student, project must belong to student
-    if (session.role === "STUDENT" && project.studentId.toString() !== session.userId) {
-      return NextResponse.json(
-        { error: "Forbidden: You do not have permission to view this quotation." },
-        { status: 403 }
-      );
+    if (session.role === "STUDENT") {
+      // Security check: if student, project must belong to student
+      if (project.studentId.toString() !== session.userId) {
+        return NextResponse.json(
+          { error: "Forbidden: You do not have permission to view this quotation." },
+          { status: 403 }
+        );
+      }
+      // Drafts were never sent to the student, so they do not exist from their point of view
+      if (!quotation.sentAt) {
+        return NextResponse.json({ error: "Quotation not found" }, { status: 404 });
+      }
     }
 
     // Auto mark as VIEWED if first time opened by student
@@ -61,18 +78,24 @@ export async function GET(
       });
     }
 
-    // Fetch version history if available
-    const versionHistory = await Quotation.find({ quotationId: quotation.quotationId })
+    // Fetch version history (students only see versions that were actually sent)
+    const versionHistory = await Quotation.find({
+      quotationId: quotation.quotationId,
+      ...(session.role === "STUDENT" ? { sentAt: { $exists: true } } : {}),
+    })
       .sort({ version: 1 })
       .select("version total status createdAt changeReason previousAmount");
 
+    const latest = versionHistory[versionHistory.length - 1];
+
     return NextResponse.json({
-      quotation,
+      quotation: { ...quotation.toObject(), taxPercentage: effectiveTaxPercentage(quotation) },
       project,
       versionHistory,
+      latestVersionId: latest?._id,
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return handleApiError(err);
   }
 }
 
@@ -90,134 +113,176 @@ export async function PATCH(
     }
 
     const { id } = await params;
+    if (!isObjectId(id)) {
+      return NextResponse.json({ error: "Quotation not found." }, { status: 404 });
+    }
     const body = await req.json();
     await connectToDatabase();
 
-    const existingQuotation = await Quotation.findById(id);
-    if (!existingQuotation) {
+    const existing = await Quotation.findById(id);
+    if (!existing) {
       return NextResponse.json({ error: "Quotation not found." }, { status: 404 });
     }
 
-    if (existingQuotation.status === "ACCEPTED") {
+    if (existing.status === "ACCEPTED") {
       return NextResponse.json(
         { error: "Cannot modify an accepted quotation. Preserving accepted agreement." },
         { status: 400 }
       );
     }
 
-    // Auto calculate new totals
-    const items: IQuotationItem[] = (body.items || existingQuotation.items).map((it: any) => ({
-      description: it.description?.trim() || "Item",
-      quantity: Math.max(1, Number(it.quantity) || 1),
-      unitPrice: Math.max(0, Number(it.unitPrice) || 0),
-      amount: Math.max(1, Number(it.quantity) || 1) * Math.max(0, Number(it.unitPrice) || 0),
-    }));
+    // Only the newest version of a quotation can be revised; older ones are history.
+    const newest = await Quotation.findOne({ quotationId: existing.quotationId }).sort({ version: -1 });
+    if (existing.status === "CANCELLED" || (newest && newest.version > existing.version)) {
+      return NextResponse.json(
+        { error: "This version has been superseded or cancelled. Please revise the latest version instead." },
+        { status: 400 }
+      );
+    }
 
-    const subtotal = items.reduce((acc, it) => acc + it.amount, 0);
-    const discount = Math.min(subtotal, Math.max(0, Number(body.discount ?? existingQuotation.discount)));
-    const taxable = subtotal - discount;
-    const taxPercentage = body.taxPercentage ?? 18;
-    const tax = Math.round((taxable * taxPercentage) / 100);
-    const total = taxable + tax;
+    // Validate everything before touching the database
+    let items = existing.items;
+    if (body.items !== undefined) {
+      const parsed = normalizeItems(body.items);
+      if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+      items = parsed.items as any;
+    }
+    const discountCheck = validateDiscount(body.discount ?? existing.discount);
+    if (!discountCheck.ok) return NextResponse.json({ error: discountCheck.error }, { status: 400 });
+    // A revision keeps the tax rate the quotation was originally priced with unless explicitly changed.
+    const taxCheck = validateTaxPercentage(body.taxPercentage ?? effectiveTaxPercentage(existing));
+    if (!taxCheck.ok) return NextResponse.json({ error: taxCheck.error }, { status: 400 });
+    let validUntil = existing.validUntil;
+    if (body.validUntil) {
+      const v = validateValidUntil(body.validUntil);
+      if (!v.ok) return NextResponse.json({ error: v.error }, { status: 400 });
+      validUntil = v.value;
+    }
+
+    const totals = computeTotals(items, discountCheck.value, taxCheck.value);
+    const paymentTerms = str(body.paymentTerms) || existing.paymentTerms;
+    const deliveryTimeline = str(body.deliveryTimeline) || existing.deliveryTimeline;
+    const terms = str(body.terms) || existing.terms;
+    const notes = body.notes !== undefined ? str(body.notes) : existing.notes;
 
     // QUOTATION VERSIONING (Requirement 20)
-    // If the quotation has already been SENT, VIEWED, or CHANGES_REQUESTED, create a new version!
-    const needsNewVersion = ["SENT", "VIEWED", "CHANGES_REQUESTED"].includes(existingQuotation.status);
+    // Once a quotation has been SENT (or answered / expired), changes create a new version;
+    // the old version stays in history and is superseded when the new one is sent.
+    const needsNewVersion = ["SENT", "VIEWED", "CHANGES_REQUESTED", "REJECTED", "EXPIRED"].includes(existing.status);
 
     if (needsNewVersion) {
-      // Mark old version as superseded/archived if needed, create new version document
-      const nextVersion = existingQuotation.version + 1;
-      const newQuotation = await Quotation.create({
-        quotationId: existingQuotation.quotationId,
-        projectId: existingQuotation.projectId,
-        version: nextVersion,
-        items,
-        subtotal,
-        discount,
-        tax,
-        total,
-        validUntil: body.validUntil ? new Date(body.validUntil) : existingQuotation.validUntil,
-        paymentTerms: body.paymentTerms || existingQuotation.paymentTerms,
-        deliveryTimeline: body.deliveryTimeline || existingQuotation.deliveryTimeline,
-        terms: body.terms || existingQuotation.terms,
-        notes: body.notes !== undefined ? body.notes : existingQuotation.notes,
-        status: body.sendImmediately ? "SENT" : "DRAFT",
-        createdBy: session.userId,
-        sentAt: body.sendImmediately ? new Date() : undefined,
-        previousAmount: existingQuotation.total,
-        changeReason: body.changeReason || "Revised scope & pricing based on feedback.",
-      });
+      // A revision of an expired quote must carry a valid (future) validity date.
+      if (validUntil.getTime() < Date.now()) {
+        const v = validateValidUntil(body.validUntil);
+        return NextResponse.json(
+          { error: v.ok ? "Please provide a new valid-until date." : "This quotation has expired; please provide a new valid-until date." },
+          { status: 400 }
+        );
+      }
 
-      // Update project status if sent
-      if (body.sendImmediately) {
-        await Project.findByIdAndUpdate(existingQuotation.projectId, { status: "QUOTATION_SENT" });
-        const proj = await Project.findById(existingQuotation.projectId);
-        if (proj) {
-          await createNotification({
-            userId: proj.studentId,
-            title: `Quotation Updated (v${nextVersion})`,
-            message: `A revised quotation (${existingQuotation.quotationId} v${nextVersion}) for ₹${total.toLocaleString()} is available.`,
-            type: "QUOTATION",
-            relatedEntityId: existingQuotation.quotationId,
-            relatedEntityType: "QUOTATION",
-          });
+      const nextVersion = (newest?.version ?? existing.version) + 1;
+      let newQuotation: any = null;
+      try {
+        newQuotation = await Quotation.create({
+          quotationId: existing.quotationId,
+          projectId: existing.projectId,
+          version: nextVersion,
+          items,
+          subtotal: totals.subtotal,
+          discount: totals.discount,
+          tax: totals.tax,
+          taxPercentage: taxCheck.value,
+          total: totals.total,
+          validUntil,
+          paymentTerms,
+          deliveryTimeline,
+          terms,
+          notes,
+          status: "DRAFT",
+          createdBy: session.userId,
+          previousAmount: existing.total,
+          changeReason: str(body.changeReason) || "Revised scope & pricing based on feedback.",
+        });
+      } catch (err: any) {
+        if (isDuplicateKeyError(err)) {
+          return NextResponse.json({ error: "Another revision was just created. Please reload and try again." }, { status: 409 });
         }
+        throw err;
       }
 
       await logActivity({
         userId: session.userId,
         role: "ADMIN",
         action: "QUOTATION_VERSION_CREATED",
-        projectId: existingQuotation.projectId,
-        entityId: existingQuotation.quotationId,
+        projectId: existing.projectId,
+        entityId: existing.quotationId,
         entityType: "QUOTATION",
-        description: `Admin created revised Version ${nextVersion} of ${existingQuotation.quotationId} (₹${existingQuotation.total.toLocaleString()} → ₹${total.toLocaleString()}).`,
+        description: `Admin created revised Version ${nextVersion} of ${existing.quotationId} (₹${existing.total.toLocaleString()} → ₹${totals.total.toLocaleString()}).`,
         metadata: {
-          previousAmount: existingQuotation.total,
-          newAmount: total,
+          previousAmount: existing.total,
+          newAmount: totals.total,
           version: nextVersion,
           reason: body.changeReason,
         },
       });
 
+      if (body.sendImmediately) {
+        newQuotation = (await dispatchQuotation(newQuotation._id.toString(), session.userId)) || newQuotation;
+      }
+
       return NextResponse.json({
         success: true,
-        message: `Version ${nextVersion} of quotation created successfully!`,
+        message: body.sendImmediately
+          ? `Version ${nextVersion} of the quotation was issued and sent to the student.`
+          : `Version ${nextVersion} of the quotation was saved as a draft.`,
         quotation: newQuotation,
       });
-    } else {
-      // In DRAFT mode, direct update is permitted
-      existingQuotation.items = items;
-      existingQuotation.subtotal = subtotal;
-      existingQuotation.discount = discount;
-      existingQuotation.tax = tax;
-      existingQuotation.total = total;
-      if (body.validUntil) existingQuotation.validUntil = new Date(body.validUntil);
-      if (body.paymentTerms) existingQuotation.paymentTerms = body.paymentTerms;
-      if (body.deliveryTimeline) existingQuotation.deliveryTimeline = body.deliveryTimeline;
-      if (body.terms) existingQuotation.terms = body.terms;
-      if (body.notes !== undefined) existingQuotation.notes = body.notes;
-      if (body.status) existingQuotation.status = body.status;
-
-      await existingQuotation.save();
-
-      await logActivity({
-        userId: session.userId,
-        role: "ADMIN",
-        action: "QUOTATION_UPDATED",
-        projectId: existingQuotation.projectId,
-        entityId: existingQuotation.quotationId,
-        entityType: "QUOTATION",
-        description: `Admin updated draft quotation ${existingQuotation.quotationId}.`,
-      });
-
-      return NextResponse.json({
-        success: true,
-        message: "Quotation updated successfully.",
-        quotation: existingQuotation,
-      });
     }
+
+    // DRAFT: direct in-place update is permitted
+    existing.items = items;
+    existing.subtotal = totals.subtotal;
+    existing.discount = totals.discount;
+    existing.tax = totals.tax;
+    existing.taxPercentage = taxCheck.value;
+    existing.total = totals.total;
+    existing.validUntil = validUntil;
+    existing.paymentTerms = paymentTerms;
+    existing.deliveryTimeline = deliveryTimeline;
+    existing.terms = terms;
+    existing.notes = notes;
+    if (body.changeReason) existing.changeReason = str(body.changeReason);
+    if (body.status !== undefined) {
+      // A draft can only be kept as a draft or discarded; sending goes through /send.
+      if (!["DRAFT", "CANCELLED"].includes(body.status)) {
+        return NextResponse.json({ error: "A draft can only be saved as DRAFT or cancelled." }, { status: 400 });
+      }
+      existing.status = body.status;
+    }
+
+    await existing.save();
+
+    await logActivity({
+      userId: session.userId,
+      role: "ADMIN",
+      action: "QUOTATION_UPDATED",
+      projectId: existing.projectId,
+      entityId: existing.quotationId,
+      entityType: "QUOTATION",
+      description: `Admin updated draft quotation ${existing.quotationId}.`,
+    });
+
+    let result: any = existing;
+    if (body.sendImmediately && existing.status === "DRAFT") {
+      result = (await dispatchQuotation(existing._id.toString(), session.userId)) || existing;
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: body.sendImmediately ? "Quotation updated and sent to the student." : "Quotation updated successfully.",
+      quotation: result,
+    });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return handleApiError(err);
   }
 }

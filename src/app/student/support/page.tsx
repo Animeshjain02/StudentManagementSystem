@@ -9,9 +9,29 @@ export default function StudentSupportPage() {
   const [subject, setSubject] = useState("");
   const [message, setMessage] = useState("");
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSubmitted(true);
+    setSending(true);
+    setError("");
+    try {
+      const res = await fetch("/api/support", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subject, message }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not send your request.");
+      setSubmitted(true);
+      setSubject("");
+      setMessage("");
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSending(false);
+    }
   };
 
   const faqs = [
@@ -87,6 +107,9 @@ export default function StudentSupportPage() {
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4 text-xs">
+              {error && (
+                <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800">{error}</div>
+              )}
               <div>
                 <label className="block font-medium text-slate-700 mb-1">Subject</label>
                 <input
@@ -113,10 +136,11 @@ export default function StudentSupportPage() {
 
               <button
                 type="submit"
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs transition-colors"
+                disabled={sending}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs transition-colors disabled:opacity-50"
               >
                 <Send className="w-4 h-4" />
-                <span>Submit Query</span>
+                <span>{sending ? "Sending..." : "Submit Query"}</span>
               </button>
             </form>
           )}

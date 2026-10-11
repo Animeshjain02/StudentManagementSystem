@@ -7,7 +7,6 @@ import {
   LayoutDashboard,
   FolderGit2,
   PlusCircle,
-  FileSpreadsheet,
   CreditCard,
   Bell,
   LogOut,
@@ -15,7 +14,10 @@ import {
   X,
   GraduationCap,
   Sparkles,
+  Loader2,
 } from "lucide-react";
+
+import { subscribeToRealtime } from "@/lib/realtime";
 
 interface StudentLayoutProps {
   children: React.ReactNode;
@@ -23,66 +25,92 @@ interface StudentLayoutProps {
   subtitle?: string;
 }
 
+let cachedStudentUser: any = null;
+
+export function clearStudentAuthCache() {
+  cachedStudentUser = null;
+}
+
 export function StudentLayout({ children, title, subtitle }: StudentLayoutProps) {
   const pathname = usePathname();
   const router = useRouter();
-  const isAuthDisabled = process.env.NEXT_PUBLIC_DISABLE_AUTH === "true";
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [user, setUser] = useState<any>(
-    isAuthDisabled
-      ? {
-          name: "Aarav Sharma",
-          email: "student@example.com",
-          role: "STUDENT",
-          profile: { ambassadorId: "CA-2026-0001", collegeName: "IIT Delhi" },
-        }
-      : null
-  );
+  const [user, setUser] = useState<any>(cachedStudentUser);
+  const [checkingAuth, setCheckingAuth] = useState(!cachedStudentUser);
   const [unreadNotifs, setUnreadNotifs] = useState(0);
 
   useEffect(() => {
-    // Set active portal cookie for direct access mode
-    if (typeof document !== "undefined") {
-      document.cookie = "active_portal=student; path=/; max-age=86400";
-    }
+    let isMounted = true;
 
     fetch("/api/auth/me?portal=student")
       .then((res) => {
         if (!res.ok) {
-          if (!isAuthDisabled) {
-            router.push("/student/login");
-          }
-          return null;
+          throw new Error("Unauthorized");
         }
         return res.json();
       })
       .then((data) => {
+        if (!isMounted) return;
         if (data?.user) {
-          if (data.user.role !== "STUDENT" && !isAuthDisabled) {
+          if (data.user.role !== "STUDENT") {
             router.push("/admin/dashboard");
             return;
           }
-          // REQUIREMENT 6: If mustChangePassword is true, force redirect to change password
-          if (!isAuthDisabled && data.user.mustChangePassword && pathname !== "/student/change-password") {
-            router.push("/student/change-password");
-            return;
-          }
+          cachedStudentUser = data.user;
           setUser(data.user);
+          setCheckingAuth(false);
+        } else {
+          cachedStudentUser = null;
+          router.push("/student/login");
         }
       })
       .catch(() => {
-        if (!isAuthDisabled) {
+        if (isMounted) {
+          cachedStudentUser = null;
           router.push("/student/login");
         }
       });
 
-    fetch("/api/notifications")
-      .then((res) => res.json())
-      .then((data) => setUnreadNotifs(data.unreadCount || 0))
-      .catch(() => {});
-  }, [router, pathname, isAuthDisabled]);
+    const pollNotifications = () => {
+      fetch("/api/notifications")
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (!data || !isMounted) return;
+          const count = data.unreadCount || 0;
+          setUnreadNotifs(count);
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("notifications-sync", { detail: data }));
+          }
+        })
+        .catch(() => {});
+    };
+
+    pollNotifications();
+    const notifInterval = setInterval(pollNotifications, 5000);
+    const unsubscribeRealtime = subscribeToRealtime(() => pollNotifications());
+    const onWindowFocus = () => pollNotifications();
+    window.addEventListener("focus", onWindowFocus);
+
+    return () => {
+      isMounted = false;
+      clearInterval(notifInterval);
+      unsubscribeRealtime();
+      window.removeEventListener("focus", onWindowFocus);
+    };
+  }, [router]);
+
+  useEffect(() => {
+    const handleSync = (e: any) => {
+      if (typeof e.detail?.unreadCount === "number") {
+        setUnreadNotifs(e.detail.unreadCount);
+      }
+    };
+    window.addEventListener("notifications-sync", handleSync);
+    return () => window.removeEventListener("notifications-sync", handleSync);
+  }, []);
 
   const handleLogout = async () => {
+    cachedStudentUser = null;
     await fetch("/api/auth/logout", { method: "POST" });
     router.push("/student/login");
   };
@@ -90,16 +118,35 @@ export function StudentLayout({ children, title, subtitle }: StudentLayoutProps)
   const navItems = [
     { label: "Dashboard", href: "/student/dashboard", icon: LayoutDashboard },
     { label: "My Projects", href: "/student/projects", icon: FolderGit2 },
-    { label: "Quotations", href: "/student/quotations", icon: FileSpreadsheet },
     { label: "Payments", href: "/student/payments", icon: CreditCard },
   ];
 
+  const [navigatingTo, setNavigatingTo] = useState<string | null>(null);
+
+  useEffect(() => {
+    setNavigatingTo(null);
+  }, [pathname]);
+
+  if (checkingAuth) {
+    return (
+      <div className="h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-400">
+        <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-3" />
+        <span className="text-xs font-medium">Verifying authorization...</span>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-slate-50 flex">
-      {/* Sidebar for Desktop */}
-      <aside className="hidden lg:flex lg:flex-col w-64 bg-white border-r border-slate-200 flex-shrink-0">
+    <div className="h-screen bg-slate-50 flex overflow-hidden">
+      {/* Top instant navigation loading bar */}
+      {navigatingTo && (
+        <div className="fixed top-0 left-0 right-0 h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-indigo-600 z-50 animate-pulse shadow-sm shadow-indigo-500/50" />
+      )}
+
+      {/* Sidebar for Desktop - Locked stable, zero slide effect */}
+      <aside className="hidden lg:flex lg:flex-col w-64 bg-white border-r border-slate-200 flex-shrink-0 h-full">
         {/* Brand */}
-        <div className="h-16 flex items-center px-6 gap-3 border-b border-slate-100">
+        <div className="h-16 flex items-center px-6 gap-3 border-b border-slate-100 flex-shrink-0">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-indigo-500 flex items-center justify-center text-white shadow-sm">
             <GraduationCap className="w-5 h-5 text-white" />
           </div>
@@ -112,9 +159,12 @@ export function StudentLayout({ children, title, subtitle }: StudentLayoutProps)
         </div>
 
         {/* Submit project CTA button */}
-        <div className="p-3">
+        <div className="p-3 flex-shrink-0">
           <Link
             href="/student/projects/new"
+            prefetch={false}
+            onMouseEnter={() => router.prefetch("/student/projects/new")}
+            onClick={() => setNavigatingTo("/student/projects/new")}
             className="flex items-center justify-center gap-2 w-full py-2.5 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-xs shadow-sm shadow-indigo-200 transition-all hover:shadow"
           >
             <PlusCircle className="w-4 h-4" />
@@ -126,19 +176,32 @@ export function StudentLayout({ children, title, subtitle }: StudentLayoutProps)
         <div className="flex-1 px-3 space-y-1 overflow-y-auto">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const active = pathname === item.href || (item.href !== "/student/dashboard" && pathname.startsWith(item.href + "/"));
+            const isTarget = navigatingTo === item.href;
+            const active =
+              isTarget ||
+              (!navigatingTo &&
+                (pathname === item.href || (item.href !== "/student/dashboard" && pathname.startsWith(item.href + "/"))));
             return (
               <Link
                 key={item.href}
                 href={item.href}
+                prefetch={false}
+                onMouseEnter={() => router.prefetch(item.href)}
+                onClick={(e) => {
+                  if (pathname === item.href) {
+                    e.preventDefault();
+                    return;
+                  }
+                  setNavigatingTo(item.href);
+                }}
                 className={`flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all ${
                   active
-                    ? "bg-indigo-50 text-indigo-700 font-semibold"
+                    ? "bg-indigo-50 text-indigo-700 font-semibold shadow-2xs"
                     : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-                }`}
+                } ${isTarget ? "ring-1 ring-indigo-300 opacity-90" : ""}`}
               >
                 <div className="flex items-center gap-3">
-                  <Icon className={`w-4 h-4 ${active ? "text-indigo-600" : "text-slate-400"}`} />
+                  <Icon className={`w-4 h-4 ${active ? "text-indigo-600" : "text-slate-400"} ${isTarget ? "animate-spin" : ""}`} />
                   <span>{item.label}</span>
                 </div>
                 {item.label === "Notifications" && unreadNotifs > 0 && (
@@ -152,7 +215,7 @@ export function StudentLayout({ children, title, subtitle }: StudentLayoutProps)
         </div>
 
         {/* Student User info & Logout */}
-        <div className="p-4 border-t border-slate-100 bg-slate-50/50">
+        <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex-shrink-0">
           <div className="flex items-center gap-3 mb-3">
             <div className="w-9 h-9 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-xs border border-indigo-200">
               {user?.name?.slice(0, 2).toUpperCase() || "ST"}
@@ -172,23 +235,26 @@ export function StudentLayout({ children, title, subtitle }: StudentLayoutProps)
         </div>
       </aside>
 
-      {/* Main Area */}
-      <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-16 bg-white border-b border-slate-200 px-4 sm:px-6 flex items-center justify-between sticky top-0 z-30 shadow-xs">
-          <div className="flex items-center gap-4">
+      {/* Main Area - Only this container scrolls, sidebar stays completely fixed */}
+      <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
+        <header className="h-16 bg-white border-b border-slate-200 px-3 sm:px-6 flex items-center justify-between flex-shrink-0 z-30 shadow-xs">
+          <div className="flex items-center gap-2 sm:gap-4 min-w-0">
             <button
               onClick={() => setMobileMenuOpen(true)}
-              className="lg:hidden p-2 rounded-lg text-slate-600 hover:bg-slate-100"
+              aria-label="Open menu"
+              className="lg:hidden p-2 rounded-lg text-slate-600 hover:bg-slate-100 flex-shrink-0"
             >
               <Menu className="w-5 h-5" />
             </button>
-            <div>
-              <h1 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">{title || "Student Dashboard"}</h1>
-              {subtitle && <p className="text-xs text-slate-500 hidden sm:block">{subtitle}</p>}
+            <div className="min-w-0">
+              <h1 className="text-sm sm:text-lg font-bold text-slate-900 tracking-tight truncate">
+                {title || "Student Dashboard"}
+              </h1>
+              {subtitle && <p className="text-xs text-slate-500 hidden sm:block truncate">{subtitle}</p>}
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
             <Link
               href="/student/notifications"
               className="p-2 rounded-lg text-slate-600 hover:bg-slate-100 relative block transition-colors"
@@ -201,14 +267,6 @@ export function StudentLayout({ children, title, subtitle }: StudentLayoutProps)
                 </span>
               )}
             </Link>
-
-            <div className="h-6 w-px bg-slate-200 mx-1" />
-
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
-                Verified Ambassador
-              </span>
-            </div>
           </div>
         </header>
 

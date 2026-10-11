@@ -1,3 +1,4 @@
+import { handleApiError } from "@/lib/api";
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
@@ -8,7 +9,9 @@ import { Payment } from "@/models/Payment";
 import { ProjectDocument } from "@/models/Document";
 import { ActivityLog } from "@/models/ActivityLog";
 import { logActivity } from "@/lib/activity";
-import { createNotification, notifyAdmins } from "@/lib/notification";
+import { createNotification } from "@/lib/notification";
+import { PROJECT_STATUSES } from "@/lib/constants";
+import { isObjectId, num, parseDate, str } from "@/lib/validation";
 
 export async function GET(
   req: NextRequest,
@@ -25,7 +28,7 @@ export async function GET(
 
     // Find by ObjectId or projectId string
     let project = null;
-    if (id.match(/^[0-9a-fA-F]{24}$/)) {
+    if (isObjectId(id)) {
       project = await Project.findById(id).populate("studentId", "name email");
     } else {
       project = await Project.findOne({ projectId: id }).populate("studentId", "name email");
@@ -51,7 +54,11 @@ export async function GET(
     // Fetch related entities
     const [milestones, quotations, payments, documents, activityLogs] = await Promise.all([
       Milestone.find({ projectId: project._id }).sort({ startDate: 1 }),
-      Quotation.find({ projectId: project._id }).sort({ version: -1 }),
+      // Drafts (and cancelled drafts) were never sent, so students must not see them
+      Quotation.find({
+        projectId: project._id,
+        ...(session.role === "STUDENT" ? { sentAt: { $exists: true } } : {}),
+      }).sort({ createdAt: -1, version: -1 }),
       Payment.find({ projectId: project._id }).sort({ paymentDate: -1 }),
       ProjectDocument.find({ projectId: project._id }).sort({ createdAt: -1 }),
       ActivityLog.find({ projectId: project._id }).sort({ createdAt: -1 }).limit(30),
@@ -84,7 +91,7 @@ export async function GET(
       },
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return handleApiError(err);
   }
 }
 
@@ -93,7 +100,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const session = await getSession();
+    const session = await getSession("ADMIN");
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -111,7 +118,7 @@ export async function PATCH(
     await connectToDatabase();
 
     let project = null;
-    if (id.match(/^[0-9a-fA-F]{24}$/)) {
+    if (isObjectId(id)) {
       project = await Project.findById(id);
     } else {
       project = await Project.findOne({ projectId: id });
@@ -123,26 +130,42 @@ export async function PATCH(
 
     const oldStatus = project.status;
 
+    if (body.status !== undefined && !(PROJECT_STATUSES as readonly string[]).includes(body.status)) {
+      return NextResponse.json({ error: "Invalid project status." }, { status: 400 });
+    }
+    let approvedBudget: number | undefined;
+    if (body.approvedBudget !== undefined && body.approvedBudget !== null && body.approvedBudget !== "") {
+      approvedBudget = num(body.approvedBudget);
+      if (!Number.isFinite(approvedBudget) || approvedBudget < 0) {
+        return NextResponse.json({ error: "Approved budget must be a non-negative number." }, { status: 400 });
+      }
+    }
+    const dates: Record<string, Date> = {};
+    for (const field of ["startDate", "expectedDeliveryDate", "actualDeliveryDate"] as const) {
+      if (body[field]) {
+        const d = parseDate(body[field]);
+        if (!d) return NextResponse.json({ error: `Invalid date for ${field}.` }, { status: 400 });
+        dates[field] = d;
+      }
+    }
+    if (body.assignedTeam !== undefined && (!Array.isArray(body.assignedTeam) || body.assignedTeam.some((m: unknown) => typeof m !== "string"))) {
+      return NextResponse.json({ error: "Assigned team must be a list of names." }, { status: 400 });
+    }
+
     if (body.status && body.status !== oldStatus) {
       project.status = body.status as ProjectStatus;
     }
-    if (body.approvedBudget !== undefined) {
-      project.approvedBudget = Number(body.approvedBudget);
+    if (approvedBudget !== undefined) {
+      project.approvedBudget = approvedBudget;
     }
-    if (body.startDate) {
-      project.startDate = new Date(body.startDate);
-    }
-    if (body.expectedDeliveryDate) {
-      project.expectedDeliveryDate = new Date(body.expectedDeliveryDate);
-    }
-    if (body.actualDeliveryDate) {
-      project.actualDeliveryDate = new Date(body.actualDeliveryDate);
-    }
+    if (dates.startDate) project.startDate = dates.startDate;
+    if (dates.expectedDeliveryDate) project.expectedDeliveryDate = dates.expectedDeliveryDate;
+    if (dates.actualDeliveryDate) project.actualDeliveryDate = dates.actualDeliveryDate;
     if (body.assignedTeam) {
-      project.assignedTeam = body.assignedTeam;
+      project.assignedTeam = body.assignedTeam.map((m: string) => m.trim()).filter(Boolean);
     }
     if (body.notes !== undefined) {
-      project.notes = body.notes;
+      project.notes = str(body.notes);
     }
 
     await project.save();
@@ -174,12 +197,18 @@ export async function PATCH(
       });
     }
 
+    // Invalidate caches for instant real-time sync
+    const { invalidateStudentDashboardCache } = await import("@/lib/server-student-dashboard");
+    const { invalidateAdminAnalyticsCache } = await import("@/lib/server-admin-analytics");
+    invalidateStudentDashboardCache();
+    invalidateAdminAnalyticsCache();
+
     return NextResponse.json({
       success: true,
       message: "Project updated successfully.",
       project,
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return handleApiError(err);
   }
 }

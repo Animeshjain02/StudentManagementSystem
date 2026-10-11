@@ -4,7 +4,7 @@ import React, { useState, useEffect, use } from "react";
 import Link from "next/link";
 import { AdminLayout } from "@/components/layouts/AdminLayout";
 import { StatusBadge } from "@/components/common/StatusBadge";
-import { generateQuotationPDF } from "@/lib/pdf";
+import { downloadQuotationPDF } from "@/lib/company";
 import {
   ArrowLeft,
   Download,
@@ -74,35 +74,13 @@ export default function AdminQuotationDetailPage({
     }
   };
 
-  const handleDownloadPDF = () => {
+  const handleDownloadPDF = async () => {
     if (!data) return;
-    const { quotation, project } = data;
-
-    const doc = generateQuotationPDF({
-      quotationId: quotation.quotationId,
-      version: quotation.version,
-      date: new Date(quotation.createdAt).toLocaleDateString(),
-      validUntil: new Date(quotation.validUntil).toLocaleDateString(),
-      companyName: "NexusDev Solutions Pvt Ltd",
-      companyAddress: "Innov8 Hub, Koramangala 5th Block, Bengaluru, Karnataka 560095",
-      companyEmail: "contact@nexusdev.solutions",
-      companyPhone: "+91 80 4912 3456",
-      clientName: project.clientName,
-      clientEmail: project.clientEmail,
-      collegeName: project.collegeName,
-      projectName: project.projectName,
-      projectId: project.projectId,
-      items: quotation.items,
-      subtotal: quotation.subtotal,
-      discount: quotation.discount,
-      tax: quotation.tax,
-      total: quotation.total,
-      deliveryTimeline: quotation.deliveryTimeline,
-      paymentTerms: quotation.paymentTerms,
-      terms: quotation.terms,
-    });
-
-    doc.save(`${quotation.quotationId}_v${quotation.version}.pdf`);
+    try {
+      await downloadQuotationPDF(data.quotation, data.project);
+    } catch (e: any) {
+      alert(`Could not generate the PDF: ${e.message}`);
+    }
   };
 
   const handleReviseAndResend = async (e: React.FormEvent) => {
@@ -153,7 +131,9 @@ export default function AdminQuotationDetailPage({
     );
   }
 
-  const { quotation, project, versionHistory } = data;
+  const { quotation, project, versionHistory, latestVersionId } = data;
+  const isSuperseded = quotation.status === "CANCELLED" && latestVersionId && latestVersionId !== quotation._id;
+  const isDraft = quotation.status === "DRAFT";
 
   return (
     <AdminLayout
@@ -209,13 +189,13 @@ export default function AdminQuotationDetailPage({
               <span>Download PDF</span>
             </button>
 
-            {quotation.status !== "ACCEPTED" && (
+            {quotation.status !== "ACCEPTED" && quotation.status !== "CANCELLED" && (
               <button
                 onClick={() => setShowReviseModal(true)}
                 className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs font-semibold transition-colors"
               >
                 <Edit className="w-3.5 h-3.5" />
-                <span>Revise & Version (v{quotation.version + 1})</span>
+                <span>{isDraft ? "Edit Discount & Send" : `Revise & Version (v${quotation.version + 1})`}</span>
               </button>
             )}
 
@@ -231,6 +211,17 @@ export default function AdminQuotationDetailPage({
             )}
           </div>
         </div>
+
+        {isSuperseded && (
+          <div className="p-4 rounded-xl bg-slate-100 border border-slate-300 text-xs text-slate-700 flex items-center justify-between gap-3">
+            <span>
+              This version was <strong>superseded</strong> by a newer revision and can no longer be edited or accepted.
+            </span>
+            <Link href={`/admin/quotations/${latestVersionId}`} className="font-semibold text-indigo-700 underline whitespace-nowrap">
+              Open latest version &rarr;
+            </Link>
+          </div>
+        )}
 
         {/* Change Request Alert (Requirement 19) */}
         {quotation.requestedChanges && (
@@ -254,8 +245,9 @@ export default function AdminQuotationDetailPage({
             </div>
             <div className="flex flex-wrap gap-2">
               {versionHistory.map((v: any) => (
-                <div
+                <Link
                   key={v.version}
+                  href={`/admin/quotations/${v._id}`}
                   className={`p-2.5 rounded-lg border text-xs ${
                     v.version === quotation.version
                       ? "bg-indigo-50 border-indigo-300 font-bold text-indigo-800"
@@ -265,7 +257,7 @@ export default function AdminQuotationDetailPage({
                   <span>Version {v.version}</span> &bull; <span>₹{v.total.toLocaleString()}</span> &bull;{" "}
                   <span className="uppercase text-[10px]">{v.status}</span>
                   {v.changeReason && <div className="text-[10px] text-slate-400 mt-0.5">{v.changeReason}</div>}
-                </div>
+                </Link>
               ))}
             </div>
           </div>
@@ -336,7 +328,7 @@ export default function AdminQuotationDetailPage({
                   </div>
                 )}
                 <div className="flex justify-between text-slate-600">
-                  <span>GST (18%):</span>
+                  <span>GST ({quotation.taxPercentage}%):</span>
                   <span>₹{quotation.tax?.toLocaleString()}</span>
                 </div>
                 <div className="flex justify-between text-base font-bold text-indigo-700 pt-2 border-t border-slate-200">
@@ -365,11 +357,12 @@ export default function AdminQuotationDetailPage({
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 animate-in zoom-in-95">
             <h3 className="text-base font-bold text-slate-900 mb-1">
-              Create Revised Quotation Version {quotation.version + 1}
+              {isDraft ? "Edit Draft & Send to Student" : `Create Revised Quotation Version ${quotation.version + 1}`}
             </h3>
             <p className="text-xs text-slate-500 mb-4">
-              Quotation versioning will maintain Version {quotation.version} in historical logs while issuing
-              Version {quotation.version + 1} to the student.
+              {isDraft
+                ? "The draft will be updated with the new discount and sent to the student."
+                : `Quotation versioning will maintain Version ${quotation.version} in historical logs while issuing Version ${quotation.version + 1} to the student. Version ${quotation.version} is superseded once the new version is sent.`}
             </p>
 
             <form onSubmit={handleReviseAndResend} className="space-y-3 text-xs">
@@ -413,7 +406,7 @@ export default function AdminQuotationDetailPage({
                   disabled={actionLoading}
                   className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold shadow-sm"
                 >
-                  {actionLoading ? "Generating..." : `Issue Version ${quotation.version + 1}`}
+                  {actionLoading ? "Working..." : isDraft ? "Update & Send" : `Issue Version ${quotation.version + 1}`}
                 </button>
               </div>
             </form>

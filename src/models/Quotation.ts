@@ -29,6 +29,7 @@ export interface IQuotation extends Document {
   subtotal: number;
   discount: number;
   tax: number;
+  taxPercentage?: number;
   total: number;
   validUntil: Date;
   paymentTerms: string;
@@ -73,6 +74,7 @@ const QuotationSchema = new Schema<IQuotation>(
     subtotal: { type: Number, required: true, min: 0 },
     discount: { type: Number, default: 0, min: 0 },
     tax: { type: Number, default: 0, min: 0 },
+    taxPercentage: { type: Number, min: 0, max: 100 },
     total: { type: Number, required: true, min: 0 },
     validUntil: { type: Date, required: true },
     paymentTerms: { type: String, required: true },
@@ -102,8 +104,11 @@ const QuotationSchema = new Schema<IQuotation>(
   { timestamps: true }
 );
 
-QuotationSchema.index({ quotationId: 1, version: 1 });
+QuotationSchema.index({ quotationId: 1, version: 1 }, { unique: true });
 QuotationSchema.index({ projectId: 1, status: 1 });
+QuotationSchema.index({ projectId: 1, createdAt: -1 });
+QuotationSchema.index({ status: 1, createdAt: -1 });
+QuotationSchema.index({ createdAt: -1 });
 
 export const Quotation: Model<IQuotation> =
   mongoose.models.Quotation ||

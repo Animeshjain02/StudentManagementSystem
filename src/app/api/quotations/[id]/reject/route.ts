@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import { handleApiError } from "@/lib/api";
 import { getSession } from "@/lib/auth";
 import connectToDatabase from "@/lib/db";
 import { Quotation } from "@/models/Quotation";
 import { QuotationResponse } from "@/models/QuotationResponse";
-import { Project } from "@/models/Project";
 import { logActivity } from "@/lib/activity";
 import { notifyAdmins } from "@/lib/notification";
+import { ACTIONABLE_STATUSES } from "@/lib/quotation";
+import { isObjectId, str } from "@/lib/validation";
 
 export async function POST(
   req: NextRequest,
@@ -21,9 +23,13 @@ export async function POST(
     }
 
     const { id } = await params;
-    const { reason } = await req.json();
+    if (!isObjectId(id)) {
+      return NextResponse.json({ error: "Quotation not found." }, { status: 404 });
+    }
+    const body = await req.json().catch(() => ({}));
+    const reason = str(body?.reason);
 
-    if (!reason || !reason.trim()) {
+    if (!reason) {
       return NextResponse.json(
         { error: "Please provide a rejection reason." },
         { status: 400 }
@@ -31,26 +37,34 @@ export async function POST(
     }
 
     await connectToDatabase();
-    const quotation = await Quotation.findById(id).populate("projectId");
-    if (!quotation) {
+    const found = await Quotation.findById(id).populate("projectId");
+    if (!found || !found.sentAt) {
       return NextResponse.json({ error: "Quotation not found." }, { status: 404 });
     }
 
-    const project = quotation.projectId as any;
+    const project = found.projectId as any;
     if (project.studentId.toString() !== session.userId) {
       return NextResponse.json({ error: "Forbidden: Not your quotation." }, { status: 403 });
     }
 
-    quotation.status = "REJECTED";
-    quotation.rejectedAt = new Date();
-    quotation.rejectionReason = reason.trim();
-    await quotation.save();
+    // Only a quotation that is awaiting the student's answer can be rejected (atomic with the update).
+    const quotation = await Quotation.findOneAndUpdate(
+      { _id: found._id, status: { $in: ACTIONABLE_STATUSES } },
+      { $set: { status: "REJECTED", rejectedAt: new Date(), rejectionReason: reason } },
+      { new: true }
+    );
+    if (!quotation) {
+      return NextResponse.json(
+        { error: `This quotation is ${found.status.replace(/_/g, " ").toLowerCase()} and can no longer be rejected.` },
+        { status: 400 }
+      );
+    }
 
     await QuotationResponse.create({
       quotationId: quotation._id,
       version: quotation.version,
       action: "REJECTED",
-      reason: reason.trim(),
+      reason,
       performedBy: session.userId,
     });
 
@@ -61,12 +75,12 @@ export async function POST(
       projectId: project._id,
       entityId: quotation.quotationId,
       entityType: "QUOTATION",
-      description: `${session.name} rejected quotation ${quotation.quotationId}. Reason: "${reason.trim()}"`,
+      description: `${session.name} rejected quotation ${quotation.quotationId}. Reason: "${reason}"`,
     });
 
     await notifyAdmins({
       title: `Quotation Rejected: ${quotation.quotationId}`,
-      message: `${session.name} rejected quotation for ${project.projectName}. Reason: ${reason.trim()}`,
+      message: `${session.name} rejected quotation for ${project.projectName}. Reason: ${reason}`,
       type: "ALERT",
       relatedEntityId: project.projectId,
       relatedEntityType: "PROJECT",
@@ -78,6 +92,6 @@ export async function POST(
       quotation,
     });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return handleApiError(err);
   }
 }
