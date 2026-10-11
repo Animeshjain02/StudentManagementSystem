@@ -46,10 +46,10 @@ export async function runSeed() {
   });
 
   // 1. Create Admin
-  const adminPasswordHash = await bcrypt.hash("Admin@12345", 10);
+  const adminPasswordHash = await bcrypt.hash("animesh@2026", 10);
   const admin = await User.create({
-    name: "Vikram Malhotra (Super Admin)",
-    email: "admin@example.com",
+    name: "Animesh Jain (Admin)",
+    email: "animesh@gmail.com",
     passwordHash: adminPasswordHash,
     role: "ADMIN",
     status: "ACTIVE",

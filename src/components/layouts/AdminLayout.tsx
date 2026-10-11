@@ -196,7 +196,7 @@ export function AdminLayout({ children, title, subtitle }: AdminLayoutProps) {
             </div>
             <div className="overflow-hidden">
               <div className="text-xs font-semibold text-white truncate">{user?.name || "Administrator"}</div>
-              <div className="text-[10px] text-slate-400 truncate">{user?.email || "admin@example.com"}</div>
+              <div className="text-[10px] text-slate-400 truncate">{user?.email || "animesh@gmail.com"}</div>
             </div>
           </div>
           <button

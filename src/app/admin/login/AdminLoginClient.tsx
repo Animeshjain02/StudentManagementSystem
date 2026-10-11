@@ -44,8 +44,8 @@ export function AdminLoginClient() {
   };
 
   const fillDemoAdmin = () => {
-    setEmail("admin@example.com");
-    setPassword("Admin@12345");
+    setEmail("animesh@gmail.com");
+    setPassword("animesh@2026");
   };
 
   return (
@@ -92,7 +92,7 @@ export function AdminLoginClient() {
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="admin@example.com"
+                  placeholder="animesh@gmail.com"
                   className="block w-full pl-10 pr-3 py-2.5 bg-slate-950 border border-slate-700 rounded-lg text-white text-xs placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
                 />
               </div>
@@ -136,14 +136,14 @@ export function AdminLoginClient() {
             </button>
           </form>
 
-          {/* Quick Demo Fill */}
+          {/* Quick Admin Credentials Fill */}
           <div className="mt-6 pt-5 border-t border-slate-800">
             <button
               type="button"
               onClick={fillDemoAdmin}
               className="w-full py-2 px-3 rounded-lg bg-slate-950 hover:bg-slate-900 text-slate-300 text-xs border border-slate-800 font-medium transition-colors flex items-center justify-center gap-2 cursor-pointer"
             >
-              <span>Use Admin Test Credentials (admin@example.com)</span>
+              <span>Use Admin Credentials (animesh@gmail.com)</span>
             </button>
           </div>
         </div>
