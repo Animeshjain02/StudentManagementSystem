@@ -43,11 +43,6 @@ export function AdminLoginClient() {
     }
   };
 
-  const fillDemoAdmin = () => {
-    setEmail("animesh@gmail.com");
-    setPassword("animesh@2026");
-  };
-
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col justify-center py-12 sm:px-6 lg:px-8 relative overflow-hidden">
       {/* Background Glow */}
@@ -92,7 +87,7 @@ export function AdminLoginClient() {
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="animesh@gmail.com"
+                  placeholder="admin@company.com"
                   className="block w-full pl-10 pr-3 py-2.5 bg-slate-950 border border-slate-700 rounded-lg text-white text-xs placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
                 />
               </div>
@@ -135,23 +130,6 @@ export function AdminLoginClient() {
               <ArrowRight className="w-4 h-4" />
             </button>
           </form>
-
-          {/* Quick Admin Credentials Fill */}
-          <div className="mt-6 pt-5 border-t border-slate-800">
-            <button
-              type="button"
-              onClick={fillDemoAdmin}
-              className="w-full py-2 px-3 rounded-lg bg-slate-950 hover:bg-slate-900 text-slate-300 text-xs border border-slate-800 font-medium transition-colors flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <span>Use Admin Credentials (animesh@gmail.com)</span>
-            </button>
-          </div>
-        </div>
-
-        <div className="text-center mt-6">
-          <Link href="/student/login" prefetch={false} className="text-xs text-slate-400 hover:text-slate-300 transition-colors">
-            Are you a student ambassador? <span className="text-purple-400 font-semibold underline">Student Login &rarr;</span>
-          </Link>
         </div>
       </div>
     </div>
